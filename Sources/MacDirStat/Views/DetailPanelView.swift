@@ -5,6 +5,16 @@ struct DetailPanelView: View {
     let sizeMetric: SizeMetric
     var onDeleteWorktree: ((FileNode, Bool) -> Void)?
 
+    /// The worktree containing this node, or the node itself.
+    private var worktreeRoot: FileNode? {
+        var current: FileNode? = node
+        while let candidate = current {
+            if candidate.isGitWorktree { return candidate }
+            current = candidate.parent
+        }
+        return nil
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -39,8 +49,11 @@ struct DetailPanelView: View {
                     LabeledContent("Directories", value: "\(node.directoryCount.formatted())")
                 }
 
-                if node.isGitWorktree {
-                    Label("Linked git worktree", systemImage: GitWorktreeStyle.sfSymbol)
+                if let worktree = worktreeRoot {
+                    Label(worktree === node
+                          ? "Linked git worktree"
+                          : "Inside worktree \(worktree.name)",
+                          systemImage: GitWorktreeStyle.sfSymbol)
                         .font(.caption)
                         .foregroundStyle(GitWorktreeStyle.color)
                 }
@@ -141,13 +154,17 @@ struct DetailPanelView: View {
                 }
                 .buttonStyle(.bordered)
 
-                if node.isGitWorktree, let onDeleteWorktree {
+                if let worktree = worktreeRoot, let onDeleteWorktree {
                     Button {
-                        onDeleteWorktree(node, false)
+                        onDeleteWorktree(worktree, false)
                     } label: {
-                        Label("Move Worktree to Trash", systemImage: "trash")
+                        Label(worktree === node
+                              ? "Move Worktree to Trash"
+                              : "Move Worktree \(worktree.name) to Trash",
+                              systemImage: "trash")
                     }
                     .buttonStyle(.bordered)
+                    .help("Deletes the whole worktree, not just this folder. Refused while it has uncommitted changes.")
                 }
 
                 Button {

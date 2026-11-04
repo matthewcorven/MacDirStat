@@ -54,18 +54,7 @@ struct WorktreeInspectorView: View {
         } message: { _ in
             Text("This deletes the folder outright and cannot be undone. It is still refused if git reports uncommitted changes.")
         }
-        .alert(
-            "Worktree not deleted",
-            isPresented: Binding(
-                get: { state.worktreeAlert != nil },
-                set: { if !$0 { state.worktreeAlert = nil } }
-            ),
-            presenting: state.worktreeAlert
-        ) { _ in
-            Button("OK", role: .cancel) { state.worktreeAlert = nil }
-        } message: { reason in
-            Text(reason)
-        }
+        .worktreeDeletionAlert(state: state)
     }
 
     private var header: some View {

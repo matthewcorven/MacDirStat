@@ -469,3 +469,44 @@ func staleAnalysisCannotOverwriteANewerScan() async throws {
             "records must belong to the current scan, got \(appState.worktreeRecords.map(\.path)) vs \(currentPaths)")
     #expect(appState.worktreeRecords.contains { $0.name == "second" })
 }
+
+// MARK: - Deletion paths
+
+/// Deleting a clean worktree must actually remove the folder, and a dirty one
+/// must be refused with a reason the UI can show.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func cleanWorktreeIsDeletedAndDirtyOneIsRefusedWithAReason() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let clean = try fixture.worktree("clean-wt", branch: "clean-wt")
+    let dirty = try fixture.worktree("dirty-wt", branch: "dirty-wt")
+    try Data("uncommitted\n".utf8).write(to: dirty.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    // Dirty: refused, folder stays, reason is available for the alert.
+    let dirtyRecord = try #require(appState.worktreeRecords.first { $0.name == "dirty-wt" })
+    appState.deleteWorktree(recordPath: dirtyRecord.path)
+    try await Task.sleep(for: .milliseconds(600))
+    #expect(FileManager.default.fileExists(atPath: dirty.path))
+    let reason = try #require(appState.worktreeAlert)
+    #expect(reason.contains("uncommitted changes"))
+
+    // Clean: removed from disk and from the tree.
+    let cleanRecord = try #require(appState.worktreeRecords.first { $0.name == "clean-wt" })
+    appState.deleteWorktree(recordPath: cleanRecord.path)
+    var removed = false
+    for _ in 0..<40 where !removed {
+        try await Task.sleep(for: .milliseconds(100))
+        removed = !FileManager.default.fileExists(atPath: clean.path)
+    }
+    #expect(removed, "a clean worktree should be moved to the Trash")
+    let remaining = appState.worktreeRecords.map(\.name)
+    #expect(appState.worktreeRecords.contains { $0.name == "clean-wt" } == false,
+            "records after delete: \(remaining)")
+}

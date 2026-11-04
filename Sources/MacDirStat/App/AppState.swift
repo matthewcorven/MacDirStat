@@ -407,14 +407,18 @@ final class AppState {
             AppLog.state.error("Ignoring removal of \(node.path): node has no parent")
             return
         }
+        // Capture the full path before detaching: `path` is derived by walking
+        // parents, so clearing it would reduce the path to the node's own name
+        // and the record cleanup below would never match.
+        let removedPath = node.path
         parent.children.removeAll { $0 === node }
         node.parent = nil
         guard let root = rootNode else { return }
         root.computeAggregates()
         detectedWorktrees.removeAll { $0 === node || self.isDescendant($0, of: node) }
-        worktreeRecords.removeAll { $0.path == node.path || $0.path.hasPrefix(node.path + "/") }
+        worktreeRecords.removeAll { $0.path == removedPath || $0.path.hasPrefix(removedPath + "/") }
         let remainingWorktrees = detectedWorktrees.count
-        AppLog.state.notice("Removed \(node.path) from tree: rootFiles=\(root.fileCount) rootAllocated=\(AppLog.bytes(root.totalAllocatedSize)) worktrees=\(remainingWorktrees)")
+        AppLog.state.notice("Removed \(removedPath) from tree: rootFiles=\(root.fileCount) rootAllocated=\(AppLog.bytes(root.totalAllocatedSize)) worktrees=\(remainingWorktrees)")
         worktreeRevision &+= 1
         worktreeShrinkRevision &+= 1
 

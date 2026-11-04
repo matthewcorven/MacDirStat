@@ -93,13 +93,18 @@ struct TreemapView: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(item.node.path, forType: .string)
                     }
-                    if item.node.isGitWorktree {
+                    if let worktree = worktreeRoot(containing: item.node) {
                         Divider()
+                        if worktree !== item.node {
+                            Button("Select Worktree \(worktree.name)") {
+                                onSelect(worktree)
+                            }
+                        }
                         Button("Move Worktree to Trash", role: .destructive) {
-                            onDeleteWorktree(item.node, false)
+                            onDeleteWorktree(worktree, false)
                         }
                         Button("Delete Worktree Immediately", role: .destructive) {
-                            onDeleteWorktree(item.node, true)
+                            onDeleteWorktree(worktree, true)
                         }
                     }
                     if let target = drillDownTarget(for: item.node) {
@@ -222,6 +227,20 @@ struct TreemapView: View {
     private func drillDownTarget(for node: FileNode) -> FileNode? {
         let target = node.isDirectory ? node : node.parent
         return target === root ? nil : target
+    }
+
+    /// The worktree whose region contains `node`, if any.
+    ///
+    /// A worktree is drawn as one block, so most of its visible area belongs to
+    /// descendants rather than to the root cell. Right-clicking there must still
+    /// offer the worktree actions, or the block looks inert.
+    private func worktreeRoot(containing node: FileNode) -> FileNode? {
+        var current: FileNode? = node
+        while let candidate = current {
+            if candidate.isGitWorktree { return candidate }
+            current = candidate.parent
+        }
+        return nil
     }
 
     private func recomputeLayout(size: CGSize) {

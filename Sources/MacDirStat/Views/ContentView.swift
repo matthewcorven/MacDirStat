@@ -206,6 +206,9 @@ struct ContentView: View {
             WorktreeInspectorView(state: appState)
                 .environment(appState)
         }
+        // Refusals can start from the treemap or the inspector, so the alert is
+        // attached to the window rather than to any one surface.
+        .worktreeDeletionAlert(state: appState)
         .focusedSceneValue(\.openFolderAction, {
             openFolder()
         })
