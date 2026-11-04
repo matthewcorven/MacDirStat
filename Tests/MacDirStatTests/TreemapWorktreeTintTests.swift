@@ -109,3 +109,29 @@ private func isDescendant(_ node: FileNode, of ancestor: FileNode) -> Bool {
     }
     return false
 }
+
+/// The inspector asks for a category breakdown on every view update, including
+/// window activation. Walking millions of nodes there froze the UI for ~280ms
+/// per redraw, so the totals are precomputed with the other aggregates.
+@Test func categoryBreakdownUsesPrecomputedTotals() {
+    let root = FileNode(inode: 1, name: "/scan", isDirectory: true)
+    let nested = FileNode(inode: 2, name: "sub", isDirectory: true, allocatedSize: 4096)
+    root.addChild(FileNode(inode: 3, name: "a.pdf", isDirectory: false,
+                           ownSize: 1000, allocatedSize: 4096, category: .documents))
+    root.addChild(nested)
+    nested.addChild(FileNode(inode: 4, name: "c.pdf", isDirectory: false,
+                             ownSize: 500, allocatedSize: 4096, category: .documents))
+    nested.addChild(FileNode(inode: 5, name: "b.mp4", isDirectory: false,
+                             ownSize: 200, allocatedSize: 8192, category: .video))
+    root.computeAggregates()
+
+    // Totals roll up through nesting, for both metrics.
+    #expect(root.categorySizes[.documents] == 8192)
+    #expect(root.categorySizes[.video] == 8192)
+    #expect(root.categorySizesByFileSize[.documents] == 1500)
+    #expect(nested.categorySizes[.documents] == 4096)
+
+    // The API keeps returning what the inspector renders.
+    #expect(root.categoryBreakdown().contains { $0.category == .documents })
+    #expect(root.categoryBreakdown(metric: .fileSize).contains { $0.category == .video })
+}

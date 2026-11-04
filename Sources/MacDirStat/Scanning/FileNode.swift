@@ -21,6 +21,11 @@ final class FileNode: Identifiable, @unchecked Sendable {
     /// are a synthetic duplicate of a path scanned elsewhere.
     var scanSkippedAsDuplicate = false
     var unavailableEntryCount = 0
+    /// Per-category totals computed once in `computeAggregates`. The inspector
+    /// reads these instead of walking the tree: a full-disk root holds millions
+    /// of nodes, and walking them on every view update stalled the whole app.
+    private(set) var categorySizes: [FileCategory: Int64] = [:]
+    private(set) var categorySizesByFileSize: [FileCategory: Int64] = [:]
     private(set) var unscannedDirectoryCount = 0
     /// Folders that were not read for a permanent reason, kept separate so the
     /// UI can say "not included" without calling the scan incomplete.
@@ -79,6 +84,11 @@ final class FileNode: Identifiable, @unchecked Sendable {
         self.modificationDate = modificationDate
         self.isDataless = isDataless
         self.cloudOnlyFileCount = !isDirectory && isDataless ? 1 : 0
+        if !isDirectory {
+            // Files are the leaves the category totals are built from.
+            self.categorySizes = [category: allocatedSize]
+            self.categorySizesByFileSize = [category: ownSize]
+        }
         self.totalSize = ownSize
         self.totalAllocatedSize = allocatedSize
         self.fileCount = isDirectory ? 0 : 1
@@ -118,6 +128,8 @@ final class FileNode: Identifiable, @unchecked Sendable {
         var duplicates = scanSkippedAsDuplicate ? 1 : 0
         var unavailable = unavailableEntryCount
         var cloudFiles = 0
+        var allocatedByCategory: [FileCategory: Int64] = [:]
+        var logicalByCategory: [FileCategory: Int64] = [:]
 
         for child in children {
             child.computeAggregates()
@@ -130,6 +142,12 @@ final class FileNode: Identifiable, @unchecked Sendable {
             duplicates += child.duplicateMirrorDirectoryCount
             unavailable += child.totalUnavailableEntryCount
             cloudFiles += child.cloudOnlyFileCount
+            for (category, size) in child.categorySizes {
+                allocatedByCategory[category, default: 0] += size
+            }
+            for (category, size) in child.categorySizesByFileSize {
+                logicalByCategory[category, default: 0] += size
+            }
         }
 
         totalSize = size
@@ -141,6 +159,8 @@ final class FileNode: Identifiable, @unchecked Sendable {
         duplicateMirrorDirectoryCount = duplicates
         totalUnavailableEntryCount = unavailable
         cloudOnlyFileCount = cloudFiles
+        categorySizes = allocatedByCategory
+        categorySizesByFileSize = logicalByCategory
     }
 
     func sortChildrenBySize(metric: SizeMetric = .allocatedSize) {
@@ -150,21 +170,14 @@ final class FileNode: Identifiable, @unchecked Sendable {
         }
     }
 
+    /// Category totals for this subtree, already computed by
+    /// `computeAggregates`, so this is a dictionary lookup rather than a walk.
     func categoryBreakdown(metric: SizeMetric = .allocatedSize) -> [(category: FileCategory, size: Int64)] {
-        var breakdown: [FileCategory: Int64] = [:]
-        accumulateCategories(into: &breakdown, metric: metric)
+        let breakdown = metric == .fileSize ? categorySizesByFileSize : categorySizes
         return breakdown
+            .filter { $0.value > 0 }
             .sorted { $0.value > $1.value }
             .map { (category: $0.key, size: $0.value) }
-    }
-
-    private func accumulateCategories(into breakdown: inout [FileCategory: Int64], metric: SizeMetric) {
-        if !isDirectory {
-            breakdown[category, default: 0] += size(for: metric)
-        }
-        for child in children {
-            child.accumulateCategories(into: &breakdown, metric: metric)
-        }
     }
 
     func size(for metric: SizeMetric) -> Int64 {
