@@ -11,16 +11,30 @@ struct FileScanner: Sendable {
     let rootPath: String
     var maximumConcurrentDirectories: Int = 4
     var enumerationMode: DirectoryEnumerationMode = .automatic
+    /// Detect linked git worktree roots while scanning so their size is known
+    /// before the finished tree is published.
+    var detectGitWorktrees = false
+    /// Overrides the live mount table; tests use this to model mounted volumes.
+    var mounts: MountTable?
 
     func scan() -> AsyncStream<ScanEvent> {
         let path = rootPath
         let limit = max(1, maximumConcurrentDirectories)
         let mode = enumerationMode
+        let detectWorktrees = detectGitWorktrees
+        let mounts = mounts ?? MountTable()
         return AsyncStream(bufferingPolicy: .bufferingNewest(16)) { continuation in
             // The app cannot show its treemap until this requested scan finishes.
             // Keep directory concurrency bounded while prioritizing its results.
             let task = Task.detached(priority: .userInitiated) {
-                await performScan(rootPath: path, limit: limit, mode: mode, continuation: continuation)
+                await performScan(
+                    rootPath: path,
+                    limit: limit,
+                    mode: mode,
+                    detectWorktrees: detectWorktrees,
+                    mounts: mounts,
+                    continuation: continuation
+                )
             }
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
@@ -46,24 +60,77 @@ private struct ScanFailure: Error {
     let message: String
 }
 
+/// Mount points other than the scan root are volume boundaries. Paths are used
+/// rather than `st_dev` because a sealed system snapshot reports a different
+/// device for its files than for the directory that contains them.
+struct MountTable: Sendable {
+    private let mountPoints: Set<String>
+
+    init() {
+        var buffer: UnsafeMutablePointer<statfs>?
+        let count = getmntinfo(&buffer, MNT_NOWAIT)
+        var points = Set<String>()
+        if count > 0, let buffer {
+            for index in 0..<Int(count) {
+                points.insert(Self.normalize(Self.name(of: buffer[index])))
+            }
+        }
+        mountPoints = points
+    }
+
+    init(mountPoints: Set<String>) {
+        self.mountPoints = Set(mountPoints.map(Self.normalize))
+    }
+
+    var count: Int { mountPoints.count }
+
+    func isMountPoint(_ path: String) -> Bool {
+        mountPoints.contains(Self.normalize(path))
+    }
+
+    private static func name(of entry: statfs) -> String {
+        withUnsafePointer(to: entry.f_mntonname) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+                String(cString: $0)
+            }
+        }
+    }
+
+    private static func normalize(_ path: String) -> String {
+        var result = path
+        while result.count > 1, result.hasSuffix("/") { result.removeLast() }
+        return result
+    }
+}
+
 private final class ScanState: Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: State())
     let rootDevice: dev_t
+    let mounts: MountTable
+
+    /// Hard links and firmlinks share a device and inode. Keying on both avoids
+    /// treating equal inode numbers on different volumes as the same entry.
+    private struct FileIdentity: Hashable {
+        let device: dev_t
+        let inode: UInt64
+    }
 
     private struct State {
         var fileCount = 0
         var byteCount: Int64 = 0
-        var seenInodes = Set<UInt64>()
+        var seenEntries = Set<FileIdentity>()
         var lastProgress = ContinuousClock.now
     }
 
-    init(rootDevice: dev_t) {
+    init(rootDevice: dev_t, mounts: MountTable = MountTable()) {
         self.rootDevice = rootDevice
+        self.mounts = mounts
     }
 
     func record(_ metadata: Darwin.stat) -> Bool {
-        lock.withLock { state in
-            guard state.seenInodes.insert(UInt64(metadata.st_ino)).inserted else { return false }
+        let identity = FileIdentity(device: metadata.st_dev, inode: UInt64(metadata.st_ino))
+        return lock.withLock { state in
+            guard state.seenEntries.insert(identity).inserted else { return false }
             if metadata.st_mode & S_IFMT == S_IFREG { state.fileCount += 1 }
             state.byteCount += Int64(metadata.st_blocks) * 512
             return true
@@ -97,9 +164,14 @@ private func performScan(
     rootPath: String,
     limit: Int,
     mode: DirectoryEnumerationMode,
+    detectWorktrees: Bool,
+    mounts: MountTable,
     continuation: AsyncStream<ScanEvent>.Continuation
 ) async {
     defer { continuation.finish() }
+    let started = ContinuousClock.now
+    AppLog.scan.notice("Scan starting: path=\(rootPath, privacy: .public) concurrency=\(limit) mode=\(String(describing: mode), privacy: .public) detectWorktrees=\(detectWorktrees)")
+    var scannedDirectories = 0
     do {
         try Task.checkCancellation()
         // Normalize before lstat so relative roots and trailing separators refer
@@ -115,8 +187,9 @@ private func performScan(
             }
             return metadata
         }
-        let state = ScanState(rootDevice: rootStat.st_dev)
+        let state = ScanState(rootDevice: rootStat.st_dev, mounts: mounts)
         _ = state.record(rootStat)
+        AppLog.scan.info("Scan root: normalized=\(path, privacy: .public) device=\(rootStat.st_dev) inode=\(rootStat.st_ino) blocks=\(rootStat.st_blocks) isDataless=\(rootStat.st_flags & UInt32(SF_DATALESS) != 0) mounts=\(mounts.count)")
         let root = FileNode(name: path, metadata: rootStat)
         var pending = [DirectoryJob(path: path, node: root)]
 
@@ -132,6 +205,10 @@ private func performScan(
                 }
                 if let result = try await group.next() {
                     active -= 1
+                    scannedDirectories += 1
+                    if let issue = result.issue {
+                        AppLog.scan.info("Folder incomplete: \(result.job.path, privacy: .public) issue=\(issue, privacy: .public) subdirectories=\(result.subdirectories.count) unavailable=\(result.unavailableEntries)")
+                    }
                     result.job.node.scanIssue = result.issue
                     result.job.node.unavailableEntryCount = result.unavailableEntries
                     for child in result.children { result.job.node.addChild(child) }
@@ -140,16 +217,26 @@ private func performScan(
             }
         }
         try Task.checkCancellation()
+        // All directory jobs have completed and their children are attached, so
+        // worktree detection can run without touching the tree concurrently.
+        if detectWorktrees {
+            let worktrees = GitWorktreeDetector.markWorktrees(in: root)
+            AppLog.worktree.notice("Detected \(worktrees.count, privacy: .public) git worktree(s): \(worktrees.map(\.path).joined(separator: ", "), privacy: .public)")
+        }
         root.computeAggregates()
         root.sortChildrenBySize(metric: .allocatedSize)
         try Task.checkCancellation()
+        AppLog.scan.notice("Scan finished in \(AppLog.duration(ContinuousClock.now - started), privacy: .public): files=\(root.fileCount) directories=\(root.directoryCount) totalSize=\(AppLog.bytes(root.totalSize), privacy: .public) allocated=\(AppLog.bytes(root.totalAllocatedSize), privacy: .public) cloudOnlyFiles=\(root.cloudOnlyFileCount) incompleteFolders=\(root.unscannedDirectoryCount) unavailableEntries=\(root.totalUnavailableEntryCount) scannedDirectories=\(scannedDirectories)")
         if let progress = state.progress(path: path, force: true) { continuation.yield(progress) }
         continuation.yield(.completed(root: root))
     } catch is CancellationError {
         // Cancellation is terminal: never publish a partial tree as completed.
+        AppLog.scan.notice("Scan cancelled after \(AppLog.duration(ContinuousClock.now - started), privacy: .public): scannedDirectories=\(scannedDirectories)")
     } catch let error as ScanFailure {
+        AppLog.scan.error("Scan failed: \(error.message, privacy: .public)")
         continuation.yield(.error(error.message))
     } catch {
+        AppLog.scan.error("Scan failed: \(error.localizedDescription, privacy: .public)")
         continuation.yield(.error(error.localizedDescription))
     }
 }
@@ -169,33 +256,47 @@ private func scanDirectory(
         // them could fetch a remote listing, so retain a visible placeholder.
         guard !job.node.isDataless else {
             result.issue = "Cloud-only folder: contents were not downloaded or scanned."
+            AppLog.scan.info("Skipping cloud-only folder: \(job.path, privacy: .public)")
             return result
         }
         // Do not follow a directory replaced with a symlink after enumeration.
         let fd = open(job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
             result.issue = directoryError(errno)
+            AppLog.scan.info("Cannot open folder: \(job.path, privacy: .public) errno=\(errno) issue=\(result.issue ?? "", privacy: .public)")
             return result
         }
         defer { close(fd) }
         var currentStat = Darwin.stat()
         guard fstat(fd, &currentStat) == 0,
-              currentStat.st_dev == state.rootDevice,
               UInt64(currentStat.st_ino) == job.node.id else {
             result.issue = "Folder changed during the scan; rescan to measure its contents."
+            AppLog.scan.info("Folder identity changed during scan: \(job.path, privacy: .public) expectedInode=\(job.node.id) actualInode=\(currentStat.st_ino) expectedDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
             return result
+        }
+        // Sealed system snapshots report a different device for the same mount,
+        // so note the drift without rejecting an otherwise unchanged directory.
+        if currentStat.st_dev != state.rootDevice {
+            AppLog.scan.debug("Folder device differs from scan root: \(job.path, privacy: .public) rootDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
         }
 
         func append(name: String, metadata: Darwin.stat) {
-            guard metadata.st_dev == state.rootDevice else { return }
             let type = metadata.st_mode & S_IFMT
             guard type == S_IFDIR || type == S_IFREG, state.record(metadata) else { return }
             let child = FileNode(name: name, metadata: metadata)
-            result.children.append(child)
             if child.isDirectory {
                 let childPath = job.path == "/" ? "/" + name : job.path + "/" + name
-                result.subdirectories.append(DirectoryJob(path: childPath, node: child))
+                // A sealed system snapshot reports a different device for files
+                // than the mount they appear under, so identify nested volumes by
+                // mount point instead of by device number. Keep the mount point
+                // visible but do not descend into another volume.
+                if state.mounts.isMountPoint(childPath) {
+                    AppLog.scan.debug("Not descending into mounted volume: \(childPath, privacy: .public)")
+                } else {
+                    result.subdirectories.append(DirectoryJob(path: childPath, node: child))
+                }
             }
+            result.children.append(child)
         }
 
         if mode == .automatic {
@@ -211,7 +312,9 @@ private func scanDirectory(
                 case .failure(let code):
                     result.issue = directoryError(code)
                     return result
-                case .unsupported: break bulk
+                case .unsupported:
+                    AppLog.scan.debug("Bulk enumeration unsupported, falling back to readdir: \(job.path, privacy: .public)")
+                    break bulk
                 }
             }
         }

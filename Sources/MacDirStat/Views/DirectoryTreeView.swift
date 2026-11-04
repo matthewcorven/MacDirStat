@@ -39,8 +39,8 @@ struct DirectoryRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: node.scanIssue != nil ? "folder.badge.questionmark" : "folder.fill")
-                .foregroundStyle(.secondary)
+            Image(systemName: iconName)
+                .foregroundStyle(node.isGitWorktree ? GitWorktreeStyle.color : .secondary)
                 .font(.system(size: 13))
 
             Text(node.name)
@@ -53,6 +53,12 @@ struct DirectoryRow: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    private var iconName: String {
+        if node.scanIssue != nil { return "folder.badge.questionmark" }
+        if node.isGitWorktree { return GitWorktreeStyle.sfSymbol }
+        return "folder.fill"
     }
 }
 

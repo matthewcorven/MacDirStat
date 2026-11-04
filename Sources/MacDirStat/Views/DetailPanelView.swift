@@ -3,15 +3,18 @@ import SwiftUI
 struct DetailPanelView: View {
     let node: FileNode
     let sizeMetric: SizeMetric
+    var onDeleteWorktree: ((FileNode, Bool) -> Void)?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Header
                 HStack(spacing: 10) {
-                    Image(systemName: node.isDirectory ? "folder.fill" : node.category.sfSymbol)
+                    Image(systemName: node.isGitWorktree
+                          ? GitWorktreeStyle.sfSymbol
+                          : (node.isDirectory ? "folder.fill" : node.category.sfSymbol))
                         .font(.title2)
-                        .foregroundStyle(node.category.color)
+                        .foregroundStyle(node.isGitWorktree ? GitWorktreeStyle.color : node.category.color)
 
                     VStack(alignment: .leading) {
                         Text(node.name)
@@ -34,6 +37,12 @@ struct DetailPanelView: View {
                 if node.isDirectory {
                     LabeledContent("Files", value: "\(node.fileCount.formatted())")
                     LabeledContent("Directories", value: "\(node.directoryCount.formatted())")
+                }
+
+                if node.isGitWorktree {
+                    Label("Linked git worktree", systemImage: GitWorktreeStyle.sfSymbol)
+                        .font(.caption)
+                        .foregroundStyle(GitWorktreeStyle.color)
                 }
 
                 if node.isDataless {
@@ -113,6 +122,15 @@ struct DetailPanelView: View {
                     Label("Reveal in Finder", systemImage: "arrow.right.circle")
                 }
                 .buttonStyle(.bordered)
+
+                if node.isGitWorktree, let onDeleteWorktree {
+                    Button {
+                        onDeleteWorktree(node, false)
+                    } label: {
+                        Label("Move Worktree to Trash", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 Button {
                     NSPasteboard.general.clearContents()

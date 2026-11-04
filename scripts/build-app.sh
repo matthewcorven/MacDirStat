@@ -6,12 +6,22 @@
 #   VERSION=1.2.3      version written to Info.plist (default 0.1.0)
 #   UNIVERSAL=1        build for both arm64 and x86_64
 #   SIGN_IDENTITY=...  codesigning identity, e.g. "Developer ID Application: Name (TEAMID)" for
-#                      distribution; the default "-" signs ad hoc
+#                      distribution. When unset, the first local "Apple Development" identity is
+#                      used if one exists, otherwise the app is signed ad hoc ("-").
 set -euo pipefail
 
 VERSION="${VERSION:-0.1.0}"
-SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 BUNDLE_ID="io.github.phalladar.MacDirStat"
+
+# A stable signing identity keeps the designated requirement (and therefore the
+# app's Full Disk Access grant) across rebuilds; ad-hoc signing changes it every time.
+detect_development_identity() {
+    security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' \
+        | head -n 1
+}
+SIGN_IDENTITY="${SIGN_IDENTITY-$(detect_development_identity)}"
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 cd "$(dirname "$0")/.."
 BUILD_ARGS=(-c release)
@@ -67,9 +77,16 @@ EOF
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     # Ad-hoc sign so the bundle's resources are sealed and the signature is valid.
     codesign --force --sign - "$APP"
-else
+    echo "Signed ad hoc (no Apple Development identity found; set SIGN_IDENTITY to override)"
+elif [[ "$SIGN_IDENTITY" == "Developer ID"* ]]; then
     # Notarization requires the hardened runtime and a secure timestamp.
     codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$APP"
+    echo "Signed with $SIGN_IDENTITY"
+else
+    # Local Apple Development identity: no hardened runtime or timestamp needed,
+    # so the build works offline and the app stays debuggable.
+    codesign --force --sign "$SIGN_IDENTITY" "$APP"
+    echo "Signed with $SIGN_IDENTITY"
 fi
 
 echo "Built $APP"

@@ -11,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate()
+        let bundle = Bundle.main
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let identifier = bundle.bundleIdentifier ?? "no bundle id"
+        AppLog.state.notice("Launched MacDirStat \(version, privacy: .public) (\(identifier, privacy: .public)) pid=\(ProcessInfo.processInfo.processIdentifier) fullDiskAccess=\(FullDiskAccess.isGranted) bundle=\(bundle.bundlePath, privacy: .public)")
     }
 
     // Same lookup as SPM's Bundle.module, which calls fatalError when the resource bundle

@@ -16,7 +16,8 @@ struct VolumeInfo: Identifiable {
 }
 
 struct WelcomeView: View {
-    let onVolumeSelected: (String) -> Void
+    @Binding var detectGitWorktrees: Bool
+    let onScanRequested: (String) -> Void
 
     @State private var volumes: [VolumeInfo] = []
     @State private var hasFullDiskAccess = FullDiskAccess.isGranted
@@ -50,7 +51,7 @@ struct WelcomeView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 300), spacing: 16)], spacing: 16) {
                     ForEach(volumes) { volume in
                         VolumeCard(volume: volume) {
-                            onVolumeSelected(volume.url.path(percentEncoded: false))
+                            onScanRequested(volume.url.path(percentEncoded: false))
                         }
                     }
                 }
@@ -63,6 +64,19 @@ struct WelcomeView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
+
+            // Scan option
+            Toggle(isOn: $detectGitWorktrees) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(GitWorktreeStyle.legendTitle, systemImage: GitWorktreeStyle.sfSymbol)
+                    Text("Highlight linked git worktrees in one color and show their combined size.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .frame(maxWidth: 400)
+            .padding(.horizontal, 40)
         }
         .padding(.vertical, 48)
         // Zero minimums keep the content's size out of the window's size limits. Otherwise, with
@@ -114,7 +128,7 @@ struct WelcomeView: View {
 
     private func selectCustomFolder() {
         if let path = FolderPicker.chooseFolder() {
-            onVolumeSelected(path)
+            onScanRequested(path)
         }
     }
 }

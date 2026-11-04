@@ -23,8 +23,8 @@ struct ContentView: View {
             ZStack {
                 switch appState.scanStatus {
                 case .idle:
-                    WelcomeView { path in
-                        coordinator?.startScan(path: path)
+                    WelcomeView(detectGitWorktrees: $state.detectGitWorktrees) { path in
+                        coordinator?.startScan(path: path, detectGitWorktrees: state.detectGitWorktrees)
                     }
                     .transition(.opacity)
 
@@ -67,7 +67,13 @@ struct ContentView: View {
                                 onDrillDown: { node in
                                     appState.drillDown(to: node)
                                 },
-                                sizeMetric: appState.sizeMetric
+                                sizeMetric: appState.sizeMetric,
+                                detectGitWorktrees: appState.detectGitWorktrees,
+                                worktreeCount: appState.worktreeCount,
+                                worktreeTotalSize: appState.worktreeTotalSize,
+                                onDeleteWorktree: { node, skipTrash in
+                                    appState.deleteWorktree(node, skipTrash: skipTrash)
+                                }
                             )
                         }
                     }
@@ -90,7 +96,13 @@ struct ContentView: View {
         }
         .inspector(isPresented: $state.showInspector) {
             if let selected = appState.selectedNode {
-                DetailPanelView(node: selected, sizeMetric: appState.sizeMetric)
+                DetailPanelView(
+                    node: selected,
+                    sizeMetric: appState.sizeMetric,
+                    onDeleteWorktree: { node, skipTrash in
+                        appState.deleteWorktree(node, skipTrash: skipTrash)
+                    }
+                )
                     .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
             } else {
                 Text("Select an item to view details")
@@ -102,7 +114,7 @@ struct ContentView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     if let path = appState.rootNode?.path {
-                        coordinator?.startScan(path: path)
+                        coordinator?.startScan(path: path, detectGitWorktrees: appState.detectGitWorktrees)
                     }
                 } label: {
                     Label("Rescan", systemImage: "arrow.clockwise")
@@ -120,6 +132,12 @@ struct ContentView: View {
                         appState.scanStatus = .completed
                     }
                 }
+
+                Toggle(isOn: $state.detectGitWorktrees) {
+                    Label(GitWorktreeStyle.legendTitle, systemImage: GitWorktreeStyle.sfSymbol)
+                }
+                .toggleStyle(.button)
+                .help("Highlight linked git worktrees and show their total size")
 
                 Button {
                     zoomIn?()
@@ -164,6 +182,10 @@ struct ContentView: View {
                 coordinator = ScanCoordinator(appState: appState)
             }
         }
+        .onChange(of: appState.detectGitWorktrees) {
+            // Start or stop watching for worktrees deleted outside the app.
+            coordinator?.updateWorktreeWatch()
+        }
         .focusedSceneValue(\.openFolderAction, {
             openFolder()
         })
@@ -176,7 +198,7 @@ struct ContentView: View {
 
     private func openFolder() {
         if let path = FolderPicker.chooseFolder() {
-            coordinator?.startScan(path: path)
+            coordinator?.startScan(path: path, detectGitWorktrees: appState.detectGitWorktrees)
         }
     }
 }

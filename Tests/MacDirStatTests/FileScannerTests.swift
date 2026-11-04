@@ -323,3 +323,184 @@ func localIntegrationScan() async throws {
     #expect(bytes == root.totalAllocatedSize)
     print("Scan summary: files=\(root.fileCount), directories=\(root.directoryCount), logicalBytes=\(root.totalSize), allocatedBytes=\(bytes), cloudOnlyFiles=\(root.cloudOnlyFileCount), unscannedDirectories=\(root.unscannedDirectoryCount), unavailableEntries=\(root.totalUnavailableEntryCount), elapsed=\(ContinuousClock.now - started)")
 }
+
+@Test func linkedWorktreesAreDetectedButMainRepoAndSubmodulesAreNot() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let mainRepo = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: mainRepo.appendingPathComponent(".git"),
+                                            withIntermediateDirectories: true)
+    let worktree = fixture.root.appendingPathComponent("repo-feature")
+    try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+    try Data("gitdir: \(mainRepo.path)/.git/worktrees/repo-feature\n".utf8)
+        .write(to: worktree.appendingPathComponent(".git"))
+    let submodule = fixture.root.appendingPathComponent("repo/vendor/lib")
+    try FileManager.default.createDirectory(at: submodule, withIntermediateDirectories: true)
+    try Data("gitdir: \(mainRepo.path)/.git/modules/vendor/lib\n".utf8)
+        .write(to: submodule.appendingPathComponent(".git"))
+
+    let root = FileNode(inode: 1, name: fixture.root.path, isDirectory: true)
+    let repo = FileNode(inode: 2, name: "repo", isDirectory: true)
+    let worktreeNode = FileNode(inode: 3, name: "repo-feature", isDirectory: true)
+    let submoduleNode = FileNode(inode: 4, name: "vendor/lib", isDirectory: true)
+    let gitFile = FileNode(inode: 5, name: ".git", isDirectory: false)
+    root.addChild(repo)
+    root.addChild(worktreeNode)
+    worktreeNode.addChild(gitFile)
+    repo.addChild(submoduleNode)
+    submoduleNode.addChild(FileNode(inode: 6, name: ".git", isDirectory: false))
+
+    let found = GitWorktreeDetector.markWorktrees(in: root)
+    #expect(found.map(\.name) == ["repo-feature"])
+    #expect(worktreeNode.isGitWorktree)
+    #expect(!repo.isGitWorktree)
+    #expect(!submoduleNode.isGitWorktree)
+    #expect(GitWorktreeDetector.worktreeRoots(in: root).count == 1)
+}
+
+@Test func gitFileParsingRejectsNonWorktreePointers() {
+    let dir = "/scans/repo-feature"
+    #expect(GitWorktreeDetector.isLinkedWorktree(
+        gitFileContents: "gitdir: /scans/repo/.git/worktrees/repo-feature\n", inDirectory: dir))
+    #expect(GitWorktreeDetector.isLinkedWorktree(
+        gitFileContents: "gitdir: ../repo/.git/worktrees/feature", inDirectory: dir))
+    #expect(!GitWorktreeDetector.isLinkedWorktree(
+        gitFileContents: "gitdir: /scans/repo/.git/modules/vendor/lib\n", inDirectory: dir))
+    #expect(!GitWorktreeDetector.isLinkedWorktree(
+        gitFileContents: "not a git file", inDirectory: dir))
+}
+
+@Test @MainActor func worktreeTotalFollowsDeletion() throws {
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    let root = FileNode(inode: 1, name: "/", isDirectory: true)
+    let worktree = FileNode(inode: 2, name: "repo-feature", isDirectory: true,
+                            allocatedSize: 4096)
+    let file = FileNode(inode: 3, name: "a.txt", isDirectory: false,
+                        ownSize: 100, allocatedSize: 4096, category: .documents)
+    worktree.addChild(file)
+    worktree.isGitWorktree = true
+    root.addChild(worktree)
+    root.computeAggregates()
+    appState.setScanCompleted(root: root)
+
+    #expect(appState.worktreeCount == 1)
+    #expect(appState.worktreeTotalSize == worktree.totalAllocatedSize)
+
+    appState.removeFromTree(worktree)
+    #expect(appState.worktreeCount == 0)
+    #expect(appState.worktreeTotalSize == 0)
+    #expect(root.children.isEmpty)
+}
+
+@Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/git")))
+func scanMarksARealGitWorktree() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let repo = fixture.root.appendingPathComponent("main-repo")
+    try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+    func git(_ arguments: [String], in directory: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+    try Data([0x41]).write(to: repo.appendingPathComponent("tracked.txt"))
+    try git(["init", "-q"], in: repo)
+    try git(["-c", "user.name=T", "-c", "user.email=t@example.com", "add", "."], in: repo)
+    try git(["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "init"], in: repo)
+    try git(["worktree", "add", "-q", fixture.root.appendingPathComponent("linked").path], in: repo)
+    try Data([0x42]).write(to: fixture.root.appendingPathComponent("linked/extra.txt"))
+
+    let scanner = FileScanner(rootPath: fixture.root.path, detectGitWorktrees: true)
+    var root: FileNode?
+    for await event in scanner.scan() {
+        if case .completed(let node) = event { root = node }
+    }
+    let scanned = try #require(root)
+    let worktrees = GitWorktreeDetector.worktreeRoots(in: scanned)
+    #expect(worktrees.map(\.name) == ["linked"])
+    #expect(worktrees.first?.size(for: .allocatedSize) ?? 0 > 0)
+    let mainRepo = scanned.children.first { $0.name == "main-repo" }
+    #expect(mainRepo?.isGitWorktree == false)
+}
+
+@Test @MainActor func externalWorktreeDeletionUpdatesTotal() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let worktreePath = fixture.root.appendingPathComponent("gone")
+    try FileManager.default.createDirectory(at: worktreePath, withIntermediateDirectories: true)
+    try Data([0x41]).write(to: worktreePath.appendingPathComponent("a.txt"))
+
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    let root = FileNode(inode: 1, name: fixture.root.path, isDirectory: true)
+    let worktree = FileNode(inode: 2, name: "gone", isDirectory: true, allocatedSize: 4096)
+    worktree.isGitWorktree = true
+    root.addChild(worktree)
+    root.computeAggregates()
+    appState.setScanCompleted(root: root)
+    #expect(appState.worktreeCount == 1)
+
+    try FileManager.default.removeItem(at: worktreePath)
+    appState.reconcileWorktrees()
+    #expect(appState.worktreeCount == 0)
+    #expect(appState.worktreeTotalSize == 0)
+    #expect(root.children.isEmpty)
+}
+
+@Test func mountPointsAreNormalizedBeforeComparison() {
+    let table = MountTable(mountPoints: ["/", "/System/Volumes/Data/", "/Volumes/External"])
+    #expect(table.count == 3)
+    #expect(table.isMountPoint("/System/Volumes/Data"))
+    #expect(table.isMountPoint("/System/Volumes/Data/"))
+    #expect(table.isMountPoint("/Volumes/External"))
+    #expect(!table.isMountPoint("/System"))
+    #expect(!table.isMountPoint("/private"))
+}
+
+@Test func mountedVolumesAreListedButNotDescended() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let mountPoint = fixture.root.appendingPathComponent("mounted")
+    try FileManager.default.createDirectory(at: mountPoint.appendingPathComponent("inner"),
+                                            withIntermediateDirectories: true)
+    try Data([0x41]).write(to: mountPoint.appendingPathComponent("inner/hidden.txt"))
+    try Data([0x41]).write(to: fixture.root.appendingPathComponent("visible.txt"))
+
+    let scanner = FileScanner(rootPath: fixture.root.path,
+                              mounts: MountTable(mountPoints: [fixture.root.path, mountPoint.path]))
+    var root: FileNode?
+    for await event in scanner.scan() {
+        if case .completed(let node) = event { root = node }
+    }
+    let scanned = try #require(root)
+    // The mount point itself is measured, but its contents belong to another volume.
+    #expect(scanned.children.map(\.name).sorted() == ["mounted", "visible.txt"])
+    #expect(scanned.fileCount == 1)
+    #expect(scanned.children.first { $0.name == "mounted" }?.children.isEmpty == true)
+}
+
+// A sealed system snapshot reports a different `ATTR_CMN_DEVID` for files inside
+// the same mount. Treating that as a foreign volume silently dropped every file
+// under /bin, /sbin and most of /usr, so both enumeration paths must agree here.
+@Test(.enabled(if: FileManager.default.fileExists(atPath: "/bin/ls")))
+func sealedSystemVolumeFilesAreNotDropped() async throws {
+    let (bulk, _) = try await completedScan("/bin")
+    let (posix, _) = try await completedScan("/bin", mode: .posix)
+    #expect(bulk.fileCount > 0)
+    #expect(bulk.fileCount == posix.fileCount)
+    #expect(bulk.totalAllocatedSize == posix.totalAllocatedSize)
+    #expect(bulk.totalSize == posix.totalSize)
+}
+
+@Test func scannerUsesLiveMountTableByDefault() {
+    let scanner = FileScanner(rootPath: "/")
+    #expect(scanner.mounts == nil)
+    #expect(MountTable().count > 0)
+}

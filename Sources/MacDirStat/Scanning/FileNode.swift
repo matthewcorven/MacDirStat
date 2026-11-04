@@ -9,6 +9,9 @@ final class FileNode: Identifiable, @unchecked Sendable {
     let category: FileCategory
     let modificationDate: Date?
     let isDataless: Bool
+    /// Set by the scanner (or by toggling the option after a scan) when this
+    /// directory is the root of a linked git worktree.
+    var isGitWorktree = false
     var scanIssue: String?
     var unavailableEntryCount = 0
     private(set) var unscannedDirectoryCount = 0

@@ -5,6 +5,10 @@ struct TreemapView: View {
     let onSelect: (FileNode) -> Void
     let onDrillDown: (FileNode) -> Void
     let sizeMetric: SizeMetric
+    let detectGitWorktrees: Bool
+    let worktreeCount: Int
+    let worktreeTotalSize: Int64
+    let onDeleteWorktree: (FileNode, Bool) -> Void
 
     @State private var items: [TreemapItem] = []
     @State private var hoveredItemID: Int?
@@ -42,6 +46,13 @@ struct TreemapView: View {
                     zoomScale: zoomScale,
                     panOffset: panOffset
                 )
+
+                // Persistent legend so worktrees are always identifiable
+                if detectGitWorktrees {
+                    WorktreeSummaryBadge(count: worktreeCount, totalSize: worktreeTotalSize)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(12)
+                }
             }
             .onContinuousHover { phase in
                 switch phase {
@@ -72,6 +83,15 @@ struct TreemapView: View {
                     Button("Copy Path") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(item.node.path, forType: .string)
+                    }
+                    if item.node.isGitWorktree {
+                        Divider()
+                        Button("Move Worktree to Trash", role: .destructive) {
+                            onDeleteWorktree(item.node, false)
+                        }
+                        Button("Delete Worktree Immediately", role: .destructive) {
+                            onDeleteWorktree(item.node, true)
+                        }
                     }
                     if let target = drillDownTarget(for: item.node) {
                         Divider()
@@ -109,6 +129,12 @@ struct TreemapView: View {
                 recomputeLayout(size: geometry.size)
             }
             .onChange(of: sizeMetric) {
+                recomputeLayout(size: geometry.size)
+            }
+            .onChange(of: detectGitWorktrees) {
+                recomputeLayout(size: geometry.size)
+            }
+            .onChange(of: worktreeCount) {
                 recomputeLayout(size: geometry.size)
             }
         }
@@ -194,13 +220,23 @@ struct TreemapView: View {
         lastSize = size
 
         let metric = sizeMetric
+        let highlightWorktrees = detectGitWorktrees
+        let canvasSize = size
         layoutTask?.cancel()
         layoutTask = Task.detached { [root] in
+            let started = ContinuousClock.now
             let engine = TreemapLayoutEngine()
-            let bounds = TreemapRect(x: 0, y: 0, width: Double(size.width), height: Double(size.height))
-            let newItems = engine.layout(root: root, in: bounds, sizeMetric: metric)
+            let bounds = TreemapRect(x: 0, y: 0, width: Double(canvasSize.width), height: Double(canvasSize.height))
+            let newItems = engine.layout(root: root, in: bounds, sizeMetric: metric,
+                                         highlightWorktrees: highlightWorktrees)
+            let elapsed = ContinuousClock.now - started
             await MainActor.run {
                 items = newItems
+                let worktrees = newItems.filter(\.node.isGitWorktree)
+                AppLog.layout.info("Treemap laid out in \(AppLog.duration(elapsed), privacy: .public): root=\(root.path, privacy: .public) items=\(newItems.count) canvas=\(Int(canvasSize.width))x\(Int(canvasSize.height)) metric=\(metric.rawValue, privacy: .public) worktreeItems=\(worktrees.count) worktreeArea=\(AppLog.bytes(Int64(worktrees.reduce(0) { $0 + $1.rect.area })), privacy: .public)")
+                if let largest = newItems.max(by: { $0.rect.area < $1.rect.area }) {
+                    AppLog.layout.debug("Largest item: \(largest.node.path, privacy: .public) area=\(Int(largest.rect.area)) rect=(\(Int(largest.rect.x)),\(Int(largest.rect.y)),\(Int(largest.rect.width))x\(Int(largest.rect.height))) depth=\(largest.depth) size=\(AppLog.bytes(largest.node.size(for: metric)), privacy: .public)")
+                }
             }
         }
     }

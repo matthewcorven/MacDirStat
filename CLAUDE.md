@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 swift build                # Debug build
 swift build -c release     # Release build
 swift run MacDirStat       # Run the app
-./scripts/build-app.sh     # Release build packaged as .build/MacDirStat.app (Info.plist, icon; ad-hoc signed unless SIGN_IDENTITY is set)
+./scripts/build-app.sh     # Release build packaged as .build/MacDirStat.app (Info.plist, icon; signed with the first local Apple Development identity when present, otherwise ad hoc unless SIGN_IDENTITY is set)
 open Package.swift         # Open in Xcode
 ```
 
@@ -26,16 +26,17 @@ MacDirStat is a native macOS (15.0+) SwiftUI disk space analyzer that visualizes
 
 **AppState** (`@Observable`) is the single source of truth. It holds the scanned file tree (`rootNode: FileNode`), the current treemap view root (`treemapRoot`), selected node, and breadcrumb navigation stack. All views react to AppState changes.
 
-Scan flow: User picks folder → **ScanCoordinator** launches **FileScanner** → FileScanner batches metadata with `getattrlistbulk`, uses `fstatat` for directory/mount identities and missing attributes, and falls back to `readdir`/`fstatat` on unsupported filesystems. It scans up to four directories in parallel with a task group and builds the **FileNode** tree itself → it streams `ScanEvent`s (`.progress`, then `.completed(root:)`) via `AsyncStream` → ScanCoordinator throttles progress updates (50ms) and hands the finished tree to AppState → treemap renders.
+Scan flow: User picks folder (optionally with the **Git Worktrees** toggle on) → **ScanCoordinator** launches **FileScanner** → FileScanner batches metadata with `getattrlistbulk`, uses `fstatat` for directory/mount identities and missing attributes, and falls back to `readdir`/`fstatat` on unsupported filesystems. It scans up to four directories in parallel with a task group and builds the **FileNode** tree itself → it streams `ScanEvent`s (`.progress`, then `.completed(root:)`) via `AsyncStream` → ScanCoordinator throttles progress updates (50ms) and hands the finished tree to AppState → treemap renders.
 
 ### Module Layout (Sources/MacDirStat/)
 
 - **App/** — Entry point (`MacDirStatApp`) and `AppState` central state management
-- **Scanning/** — `FileScanner` (parallel POSIX traversal with inode dedup, skips symlinks and other volumes, allocated size via blocks×512, thread-scoped materialization opt-out, cancellation propagation, explicit incomplete-folder reporting), `ScanCoordinator` (async orchestration, throttling, cancellation), `FileNode` (tree model with weak parent refs to avoid retain cycles, recursive aggregate computation)
+- **Scanning/** — `FileScanner` (parallel POSIX traversal with device+inode dedup, skips symlinks and nested mount points from `getmntinfo` (not `st_dev`, which differs for sealed system snapshots), allocated size via blocks×512, thread-scoped materialization opt-out, cancellation propagation, explicit incomplete-folder reporting), `ScanCoordinator` (async orchestration, throttling, cancellation), `FileNode` (tree model with weak parent refs to avoid retain cycles, recursive aggregate computation)
 - **Categorization/** — `FileCategory` (10 categories with colors/SF Symbols) and `FileExtensionMap` (~190 extension→category mappings; each extension belongs to one category, keys are lowercase)
+- **Worktrees/** — `GitWorktreeDetector` (marks roots of linked git worktrees by reading the directory's `.git` file and resolving it into `.git/worktrees/`) and shared `GitWorktreeStyle` color/legend constants
 - **Treemap/** — `TreemapLayoutEngine` in `TreemapLayout.swift` (Squarify algorithm, max 12 depth levels), `TreemapRenderer` (Canvas-based with depth-darkened category colors), `TreemapView` (hit testing; click/double-click drill-down/hover/context menu interactions), `ZoomPanOverlay` (scroll, pinch, and middle-drag zoom/pan)
 - **Views/** — `ContentView` (NavigationSplitView: sidebar tree + center treemap + inspector), `WelcomeView` (volume list with usage bars, Full Disk Access banner), `ScanProgressView`, `DirectoryTreeView` (OutlineGroup), `DetailPanelView` (metadata + category breakdown)
-- **Utilities/** — `ByteFormatter` (human-readable sizes), `FolderPicker` (shared NSOpenPanel), `FullDiskAccess` (permission probe and System Settings link)
+- **Utilities/** — `ByteFormatter` (human-readable sizes), `FolderPicker` (shared NSOpenPanel), `FullDiskAccess` (permission probe and System Settings link), `AppLog` (unified-logging categories `scan`, `worktree`, `layout`, `ui`, `state`; view with `log stream --level debug --predicate 'subsystem == "io.github.phalladar.MacDirStat"'`)
 
 ### Key Patterns
 

@@ -50,7 +50,7 @@ To uninstall, quit MacDirStat and drag it from Applications to the Trash. It doe
 7. **Check folder totals.** The sidebar lists folders sorted largest first. Select a folder to see its size, file count, and breakdown by file type in the inspector on the right, or click a file in the treemap to see its details.
 8. **Act on what you find.** Right-click a file and choose **Reveal in Finder**, then delete it in Finder if you're sure you don't need it. Click **Rescan** in the toolbar to refresh the treemap.
 
-MacDirStat never deletes or moves files itself.
+MacDirStat only deletes files through an explicit **Move Worktree to Trash** / **Delete Worktree Immediately** action on a detected git worktree. Everything else stays read-only.
 
 ## Features
 
@@ -63,6 +63,7 @@ MacDirStat never deletes or moves files itself.
 - **File Size or Allocated Size.** Allocated Size is the default. Switch to File Size to see logical content sizes, including online-only files.
 - **Cloud-aware scanning.** File Provider placeholders (including OneDrive, synced SharePoint libraries, iCloud Drive, and other providers using macOS dataless files) are measured without downloading their contents. Cloud-only folders are skipped and marked as incomplete.
 - **Drive overview.** The start screen shows your mounted drives with their used and available space, or you can scan any folder.
+- **Git worktree awareness.** Turn on the **Git Worktrees** option before (or after) scanning to color linked git worktrees consistently and show a legend with how many worktrees the scan contains and how much space they use. The total updates immediately when a worktree is moved to the Trash from MacDirStat, or when one is deleted outside the app.
 - **Reveal in Finder and Copy Path** from the inspector or the right-click menu.
 - **Parallel scanning with live progress.** MacDirStat reads file metadata in batches and scans folders in parallel, with a POSIX fallback for unsupported filesystems. Hard-linked files are counted once.
 - **Native and lightweight.** Built with SwiftUI, with no external dependencies, no Electron, and no bundled runtimes.
@@ -88,11 +89,11 @@ Yes. MacDirStat is free and open source under the MIT License, with no ads, in-a
 
 ### Is MacDirStat safe? Does it upload my data?
 
-MacDirStat is read-only and works entirely offline: the app contains no networking code, so it can't send your file names or any other data off your Mac. It reads file information such as names, sizes, and dates, not file contents, and it never modifies, moves, or deletes files. Downloads are signed with an Apple Developer ID and notarized by Apple, and the full source code is in this repository for anyone to review.
+MacDirStat works entirely offline: the app contains no networking code, so it can't send your file names or any other data off your Mac. It reads file information such as names, sizes, and dates, not file contents. Scans never modify, move, or delete files; the only destructive action is the explicit **Move Worktree to Trash** / **Delete Worktree Immediately** command on a detected git worktree. Downloads are signed with an Apple Developer ID and notarized by Apple, and the full source code is in this repository for anyone to review.
 
 ### Can MacDirStat delete files?
 
-No. MacDirStat is read-only. To remove something you find, right-click it, choose **Reveal in Finder**, and move it to the Trash in Finder. Then click **Rescan** to update the treemap.
+Not during a scan. To remove something you find, right-click it, choose **Reveal in Finder**, and move it to the Trash in Finder. Then click **Rescan** to update the treemap. The one exception is a detected git worktree: right-click it and choose **Move Worktree to Trash**, or **Delete Worktree Immediately** to skip the Trash, and the worktree total updates without a rescan.
 
 ### Does MacDirStat work on Intel Macs?
 
@@ -146,6 +147,8 @@ Colors show file type, based on the file extension. Rectangles get slightly dark
 | Brown | Caches | CACHE, TMP, O, PYC, CLASS |
 | Gray | Other | Everything else, including files without an extension |
 
+When the **Git Worktrees** option is on, folders that are roots of linked git worktrees are drawn in cyan (`#1AD6EB`) instead of their file-type colors, and a **Git Worktrees** legend with their count and combined size stays in the corner of the treemap. The main repository, its submodules, and ordinary folders keep their normal colors.
+
 ### Can MacDirStat scan external drives?
 
 Yes. Mounted drives, including external ones, appear on the start screen with their used and available space. Click one to scan it, or choose any folder on it with **Choose a Custom Folder...**.
@@ -176,9 +179,9 @@ To install it as a regular app in `/Applications`:
 cp -R .build/MacDirStat.app /Applications/
 ```
 
-The comments at the top of `scripts/build-app.sh` cover universal builds and Developer ID signing.
+The comments at the top of `scripts/build-app.sh` cover universal builds and Developer ID signing. If your keychain has an **Apple Development** identity, the script signs the app with it automatically; otherwise it falls back to ad-hoc signing.
 
-To include protected folders (Mail, Messages, other apps' data) in scans, add MacDirStat under **System Settings → Privacy & Security → Full Disk Access**. The script signs the app ad hoc, so macOS treats each rebuild as a new app: after rebuilding, remove MacDirStat from that list and add it again.
+To include protected folders (Mail, Messages, other apps' data) in scans, add MacDirStat under **System Settings → Privacy & Security → Full Disk Access**. A Full Disk Access grant is tied to the app's code signature: with an Apple Development identity the identity stays the same across rebuilds, so the grant keeps working. Ad-hoc signing produces a new identity on every build, so after rebuilding, remove MacDirStat from that list and add it again.
 
 Or open in Xcode:
 
@@ -192,7 +195,7 @@ Zero external dependencies. Pure Swift Package Manager project.
 
 MacDirStat is a SwiftUI app written in Swift 6 with strict concurrency checking. A single `@Observable` `AppState` drives all views.
 
-**Scan pipeline:** the user picks a drive or folder → `ScanCoordinator` starts `FileScanner` → `FileScanner` reads metadata with `getattrlistbulk`, using `fstatat` for directory/mount identities and missing attributes, and `readdir`/`fstatat` on unsupported filesystems. At most four directories run in parallel, symlinks and other volumes are skipped, and inode deduplication counts hard links and firmlinks once → it builds the `FileNode` tree and streams progress as `ScanEvent`s over an `AsyncStream` → `ScanCoordinator` throttles UI updates to every 50 ms → `TreemapLayoutEngine` lays out the tree with the squarify algorithm on a background task → a SwiftUI `Canvas` renders it.
+**Scan pipeline:** the user picks a drive or folder → `ScanCoordinator` starts `FileScanner` → `FileScanner` reads metadata with `getattrlistbulk`, using `fstatat` for directory/mount identities and missing attributes, and `readdir`/`fstatat` on unsupported filesystems. At most four directories run in parallel, symlinks are skipped, nested mount points are listed but not descended into (identified by mount table, not `st_dev`, because a sealed system snapshot reports a different device for files inside its own mount), and device+inode deduplication counts hard links and firmlinks once → it builds the `FileNode` tree, optionally marks linked git worktree roots (directories whose `.git` file points into `.git/worktrees/`), and streams progress as `ScanEvent`s over an `AsyncStream` → `ScanCoordinator` throttles UI updates to every 50 ms → `TreemapLayoutEngine` lays out the tree with the squarify algorithm on a background task → a SwiftUI `Canvas` renders it.
 
 ### Project structure
 
@@ -201,10 +204,30 @@ Sources/MacDirStat/
 ├── App/              # Entry point, AppState
 ├── Scanning/         # FileScanner (parallel POSIX traversal), ScanCoordinator, FileNode tree model
 ├── Categorization/   # FileCategory definitions, ~190 file extension mappings
+├── Worktrees/        # Git worktree detection and shared worktree color/legend constants
 ├── Treemap/          # Squarify layout engine, hit testing, Canvas renderer, zoom and pan
-├── Views/            # ContentView, WelcomeView, ScanProgressView, DirectoryTreeView, DetailPanelView
-└── Utilities/        # ByteFormatter, FullDiskAccess, FolderPicker
+├── Views/            # ContentView, WelcomeView, ScanProgressView, DirectoryTreeView, DetailPanelView, WorktreeSummaryView
+└── Utilities/        # ByteFormatter, FullDiskAccess, FolderPicker, AppLog (unified logging)
 ```
+
+### Diagnostics logging
+
+MacDirStat writes structured diagnostics to Apple's unified logging system. Every scan logs its start parameters, the normalized root with device/inode/flags, each folder that failed or changed mid-scan, the final file/folder counts, logical and allocated totals, and cloud/incomplete counts. Layout runs log item counts, canvas size, duration, and the worktree item count, and UI/state events log navigation and worktree mutations. Folder paths are logged as public so they are readable.
+
+```bash
+# Live stream while reproducing a problem
+log stream --level debug --style compact \
+  --predicate 'subsystem == "io.github.phalladar.MacDirStat"'
+
+# Recent history, including info and debug messages
+log show --last 10m --info --debug --style compact \
+  --predicate 'subsystem == "io.github.phalladar.MacDirStat"'
+
+# Narrow to one area
+log stream --level debug --predicate 'subsystem == "io.github.phalladar.MacDirStat" AND category == "scan"'
+```
+
+Categories are `scan`, `worktree`, `layout`, `ui`, and `state`. When running from Xcode, messages also appear in the debug console. With `swift run`, prefix the command with `log stream ...` in a second terminal, because the unified log does not echo to stdout.
 
 ## Contributing
 
