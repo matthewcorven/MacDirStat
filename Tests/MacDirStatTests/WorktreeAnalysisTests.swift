@@ -220,13 +220,15 @@ private let gitAvailable = FileManager.default.isExecutableFile(atPath: "/usr/bi
 
     let record = try #require(appState.worktreeRecords.first { $0.path.hasSuffix("dirty") })
     #expect(record.uncommittedChanges == 1)
-    #expect(appState.deleteBlockReason(for: record.path, skipTrash: false) != nil)
-    #expect(appState.deleteBlockReason(for: record.path, skipTrash: true) == nil)
+    #expect(appState.deleteBlockReason(for: record.path) != nil)
 
-    // The guard must actually protect the folder.
+    // The guard must protect the folder even for an immediate (non-Trash) delete
+    // and for a tree path that has no analysed record yet.
     let node = try #require(appState.worktreeNode(for: record.path))
-    appState.deleteWorktree(node)
+    appState.deleteWorktree(node, skipTrash: true)
+    try await Task.sleep(for: .milliseconds(300))
     #expect(FileManager.default.fileExists(atPath: dirty.path))
+    #expect(appState.worktreeAlert != nil)
 }
 
 
@@ -413,4 +415,53 @@ func unreadableFoldersAreReportedAndHideWorktrees() async throws {
     let records = WorktreeAnalyzer.analyze(root: scanned)
     let missed = records.first { $0.path.hasSuffix("hidden-wt") }
     #expect(missed == nil || missed?.scanMissedReason != nil)
+}
+
+// MARK: - Safety regressions
+
+/// The guard must fail closed: before analysis supplies a record, a delete must
+/// not be treated as "verified clean".
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func deleteIsRefusedBeforeCleanlinessIsVerified() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let dirty = try fixture.worktree("dirty", branch: "dirty")
+    try Data("uncommitted\n".utf8).write(to: dirty.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+
+    // Analysis may still be running; either way the delete must not proceed.
+    let node = try #require(appState.worktreeNode(for: FilePath.normalizePath(dirty.path)))
+    appState.deleteWorktree(node)
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(FileManager.default.fileExists(atPath: dirty.path))
+}
+
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func staleAnalysisCannotOverwriteANewerScan() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    _ = try fixture.worktree("first", branch: "first")
+    let firstScan = try await fixture.scan()
+    _ = try fixture.worktree("second", branch: "second")
+    let secondScan = try await fixture.scan()
+    let currentPaths = Set(GitWorktreeDetector.worktreeRoots(in: secondScan).map(\.path))
+
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    // Start analysis for the old tree, then publish the newer one before it
+    // can finish. The older result must never win.
+    appState.setScanCompleted(root: firstScan)
+    appState.setScanCompleted(root: secondScan)
+    try await appState.waitForWorktreeAnalysis()
+
+    #expect(!appState.worktreeRecords.isEmpty)
+    #expect(Set(appState.worktreeRecords.map(\.path)) == currentPaths,
+            "records must belong to the current scan, got \(appState.worktreeRecords.map(\.path)) vs \(currentPaths)")
+    #expect(appState.worktreeRecords.contains { $0.name == "second" })
 }

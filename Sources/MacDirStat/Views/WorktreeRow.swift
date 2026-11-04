@@ -62,6 +62,11 @@ struct WorktreeRow: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
+                if isUnused, let age = unusedReason {
+                    Text(age)
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
                 if let note = record.pruneReason ?? record.gitLinkIssue ?? record.scanMissedReason {
                     Text(note)
                         .font(.caption2)
@@ -74,6 +79,17 @@ struct WorktreeRow: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(record.name), \(changesDescription), \(lastChangeDescription)")
+    }
+
+    /// Explains why the record counts as unused, so the green tag is never a
+    /// black box.
+    private var unusedReason: String? {
+        if record.isDetached {
+            return "Detached HEAD with no uncommitted changes"
+        }
+        guard let latest = record.latestChange else { return nil }
+        let days = Int(now.timeIntervalSince(latest) / (24 * 60 * 60))
+        return "Clean and unchanged for \(days) days"
     }
 
     private var statusSymbol: String {
@@ -99,6 +115,12 @@ struct WorktreeRow: View {
 
     private var lastChangeDescription: String {
         guard let date = record.latestChange else { return "last change unknown" }
+        // Ages beyond a year are more useful as a date than as "1y ago", which
+        // hides whether it was two or twenty years.
+        let age = now.timeIntervalSince(date)
+        if age >= 365 * 24 * 60 * 60 {
+            return "last changed " + date.formatted(date: .abbreviated, time: .omitted)
+        }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return "changed " + formatter.localizedString(for: date, relativeTo: now)

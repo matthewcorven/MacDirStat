@@ -74,6 +74,12 @@ final class AppState {
     var scanUnreadableFolderCount: Int = 0
     var scanHadFullDiskAccess: Bool = FullDiskAccess.isGranted
     private var analysisTask: Task<Void, Never>?
+    /// Incremented for every analysis request so a slow result from an older
+    /// scan can't overwrite the current one.
+    private var analysisGeneration = 0
+    /// Set when a delete was refused, so the UI can explain why instead of
+    /// silently doing nothing.
+    var worktreeAlert: String?
     /// Set by the app delegate when a folder is opened from Finder before the
     /// main window exists.
     var pendingScanPath: String?
@@ -117,11 +123,13 @@ final class AppState {
             pruneOrphanedWorktrees()
             return
         }
-        if let reason = deleteBlockReason(for: path, skipTrash: skipTrash) {
-            AppLog.worktree.notice("Refused to delete dirty worktree \(path): \(reason)")
-            return
-        }
         Task { [weak self] in
+            guard let self else { return }
+            if let reason = await self.verifyCleanliness(of: path) {
+                AppLog.worktree.notice("Refused to delete worktree \(path): \(reason)")
+                self.worktreeAlert = reason
+                return
+            }
             let failure: String? = await Task.detached(priority: .userInitiated) {
                 do {
                     let url = URL(fileURLWithPath: path)
@@ -135,7 +143,6 @@ final class AppState {
                     return error.localizedDescription
                 }
             }.value
-            guard let self else { return }
             if let failure {
                 AppLog.worktree.error("Could not delete worktree \(path): \(failure)")
                 return
@@ -177,6 +184,7 @@ final class AppState {
 
     private func refreshDetectedWorktrees() {
         analysisTask?.cancel()
+        analysisGeneration &+= 1
         guard detectGitWorktrees, let root = rootNode else {
             detectedWorktrees = []
             worktreeRecords = []
@@ -202,6 +210,8 @@ final class AppState {
             return
         }
         isAnalyzingWorktrees = true
+        analysisGeneration &+= 1
+        let generation = analysisGeneration
         let threshold = WorktreeSettings.staleThreshold
         analysisTask = Task.detached(priority: .utility) { [weak self] in
             var options = WorktreeAnalyzer.Options()
@@ -209,7 +219,10 @@ final class AppState {
             let records = WorktreeAnalyzer.analyze(root: root, options: options)
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, !Task.isCancelled else { return }
+                guard let self,
+                      !Task.isCancelled,
+                      generation == self.analysisGeneration,
+                      self.rootNode === root else { return }
                 self.worktreeRecords = records
                 self.isAnalyzingWorktrees = false
                 let unused = records.filter {
@@ -309,17 +322,48 @@ final class AppState {
         rebuildBreadcrumbs()
     }
 
-    /// Whether a delete should be refused. Dirty worktrees lose uncommitted
-    /// work, so they are blocked unless the user explicitly deletes immediately.
-    func deleteBlockReason(for path: String, skipTrash: Bool) -> String? {
-        guard let record = worktreeRecords.first(where: { $0.path == path }) else { return nil }
-        if skipTrash { return nil }
-        if record.isPrunable { return nil }
-        if record.uncommittedChanges == 0 { return nil }
-        if record.uncommittedChanges == nil {
-            return "Uncommitted changes could not be verified. Reveal the worktree to check before deleting."
+    /// Why a delete should be refused, or `nil` when it is verified safe.
+    /// Fails closed: a worktree with no verified git state is not deletable
+    /// until `deleteWorktree` checks it, so a pending analysis can't let
+    /// uncommitted work be trashed. `skipTrash` only chooses how the folder is
+    /// removed, never whether it is safe to remove.
+    func deleteBlockReason(for path: String) -> String? {
+        guard let record = worktreeRecords.first(where: { $0.path == path }) else {
+            return "Checking for uncommitted changes…"
         }
-        return "This worktree has uncommitted changes. Commit, stash or discard them first."
+        if record.isPrunable { return nil }
+        switch record.uncommittedChanges {
+        case 0: return nil
+        case 1: return "This worktree has uncommitted changes. Commit, stash or discard them first."
+        default: return "Uncommitted changes could not be verified. Reveal the worktree to check before deleting."
+        }
+    }
+
+    /// Re-checks a worktree with git right before deleting it, so a stale or
+    /// missing analysis record can't be mistaken for "clean".
+    private func verifyCleanliness(of path: String) async -> String? {
+        if let record = worktreeRecords.first(where: { $0.path == path }) {
+            if record.isPrunable { return nil }
+            if let changes = record.uncommittedChanges {
+                return changes == 0 ? nil : deleteBlockReason(for: path)
+            }
+        }
+        guard let runner = GitRunner.shared, DirectoryProbe.isDirectory(path) else {
+            return "This worktree could not be verified with git, so it was not deleted."
+        }
+        let reason = await Task.detached(priority: .userInitiated) { () -> String? in
+            guard let snapshot = try? GitStatusReader.snapshot(of: path, runner: runner) else {
+                return "Git could not report the state of this worktree, so it was not deleted."
+            }
+            guard !snapshot.isDirty else {
+                return "This worktree has uncommitted changes. Commit, stash or discard them first."
+            }
+            return nil
+        }.value
+        if reason == nil, let index = worktreeRecords.firstIndex(where: { $0.path == path }) {
+            worktreeRecords[index].uncommittedChanges = 0
+        }
+        return reason
     }
 
     /// Moves a worktree root to the Trash, or deletes it outright when the user
@@ -328,13 +372,14 @@ final class AppState {
     func deleteWorktree(_ node: FileNode, skipTrash: Bool = false) {
         guard node.isGitWorktree, node.parent != nil else { return }
         let path = node.path
-        if let reason = deleteBlockReason(for: path, skipTrash: skipTrash) {
-            AppLog.worktree.notice("Refused to delete dirty worktree \(path): \(reason)")
-            return
-        }
         // Deleting a large worktree can take a while, so keep the UI responsive
         // and only drop the node once the filesystem operation succeeded.
         Task {
+            if let reason = await verifyCleanliness(of: path) {
+                AppLog.worktree.notice("Refused to delete worktree \(path): \(reason)")
+                self.worktreeAlert = reason
+                return
+            }
             let failure: String? = await Task.detached(priority: .userInitiated) {
                 do {
                     let url = URL(fileURLWithPath: path)

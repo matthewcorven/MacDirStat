@@ -8,6 +8,7 @@ struct WorktreeInspectorView: View {
     @Bindable var state: AppState
 
     @State private var pendingDelete: WorktreeRecord?
+    @State private var pendingImmediateDelete: WorktreeRecord?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +36,35 @@ struct WorktreeInspectorView: View {
             Text(record.isPrunable
                  ? "This only removes git's registration; the folder is already gone."
                  : "The worktree is clean, so no uncommitted work will be lost.")
+        }
+        .confirmationDialog(
+            "Delete “\(pendingImmediateDelete?.name ?? "")” immediately?",
+            isPresented: Binding(
+                get: { pendingImmediateDelete != nil },
+                set: { if !$0 { pendingImmediateDelete = nil } }
+            ),
+            presenting: pendingImmediateDelete
+        ) { record in
+            Button("Delete Immediately", role: .destructive) {
+                // The guard still re-checks git; this only skips the Trash.
+                state.deleteWorktree(recordPath: record.path, skipTrash: true)
+                pendingImmediateDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingImmediateDelete = nil }
+        } message: { _ in
+            Text("This deletes the folder outright and cannot be undone. It is still refused if git reports uncommitted changes.")
+        }
+        .alert(
+            "Worktree not deleted",
+            isPresented: Binding(
+                get: { state.worktreeAlert != nil },
+                set: { if !$0 { state.worktreeAlert = nil } }
+            ),
+            presenting: state.worktreeAlert
+        ) { _ in
+            Button("OK", role: .cancel) { state.worktreeAlert = nil }
+        } message: { reason in
+            Text(reason)
         }
     }
 
@@ -124,7 +154,7 @@ struct WorktreeInspectorView: View {
         } else if record.isClean == false {
             Text("Delete blocked: uncommitted changes")
             Button("Delete Immediately…", role: .destructive) {
-                state.deleteWorktree(recordPath: record.path, skipTrash: true)
+                pendingImmediateDelete = record
             }
         }
     }

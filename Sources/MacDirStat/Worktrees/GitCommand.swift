@@ -1,9 +1,43 @@
 import Foundation
+import os
 
 enum GitCommandError: Error, Equatable {
     case unavailable
     case failed(status: Int32, message: String)
     case timedOut([String])
+}
+
+/// Thread-safe buffer for a child process's output, filled by the readability
+/// handlers of its pipes.
+private final class OutputCollector: @unchecked Sendable {
+    enum Stream: Hashable { case standardOutput, standardError }
+
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    private struct State {
+        var buffers: [Stream: Data] = [:]
+        var finished: Set<Stream> = []
+    }
+
+    func append(_ data: Data, to stream: Stream) {
+        lock.withLock { $0.buffers[stream, default: Data()].append(data) }
+    }
+
+    func finish(_ stream: Stream) {
+        lock.withLock { $0.finished.insert(stream) }
+    }
+
+    /// Waits for both pipes to reach EOF, then returns the captured bytes.
+    func wait() -> (Data, Data) {
+        while true {
+            let done = lock.withLock { state in
+                state.finished.contains(.standardOutput) && state.finished.contains(.standardError)
+            }
+            if done { break }
+            usleep(2_000)
+        }
+        return lock.withLock { ($0.buffers[.standardOutput] ?? Data(), $0.buffers[.standardError] ?? Data()) }
+    }
 }
 
 /// Runs the system `git` binary without a shell.
@@ -56,6 +90,12 @@ struct GitRunner: Sendable {
 
         let stdout = Pipe()
         let stderr = Pipe()
+        // Drain both pipes while git runs. Waiting for exit first would deadlock
+        // as soon as the child fills the 64 KB pipe buffer: git blocks writing
+        // while this thread blocks waiting for it to exit.
+        let collected = OutputCollector()
+        drain(stdout.fileHandleForReading, into: collected, key: .standardOutput)
+        drain(stderr.fileHandleForReading, into: collected, key: .standardError)
         process.standardOutput = stdout
         process.standardError = stderr
         process.standardInput = FileHandle.nullDevice
@@ -72,11 +112,12 @@ struct GitRunner: Sendable {
         }
         if process.isRunning {
             process.terminate()
+            process.waitUntilExit()
             throw GitCommandError.timedOut(arguments)
         }
+        process.waitUntilExit()
+        let (output, errors) = collected.wait()
 
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errors = stderr.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0 else {
             let message = String(decoding: errors, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -84,6 +125,23 @@ struct GitRunner: Sendable {
         }
         return String(decoding: output, as: UTF8.self)
             .trimmingCharacters(in: .newlines)
+    }
+
+    private func drain(
+        _ handle: FileHandle,
+        into collector: OutputCollector,
+        key: OutputCollector.Stream
+    ) {
+        // `readabilityHandler` runs on its own queue, so the child never blocks.
+        handle.readabilityHandler = { readable in
+            let chunk = readable.availableData
+            if chunk.isEmpty {
+                readable.readabilityHandler = nil
+                collector.finish(key)
+            } else {
+                collector.append(chunk, to: key)
+            }
+        }
     }
 
     private static func searchPATH() -> String? {

@@ -179,7 +179,11 @@ private func performScan(
         try Task.checkCancellation()
         var rootStat = try withoutDatalessMaterialization {
             var metadata = Darwin.stat()
-            guard lstat(rootPath, &metadata) == 0 else {
+            // A trailing separator makes lstat follow a symlink, which would let
+            // a symlinked root through; trim it before the check.
+            var checkedPath = rootPath
+            while checkedPath.count > 1, checkedPath.hasSuffix("/") { checkedPath.removeLast() }
+            guard lstat(checkedPath, &metadata) == 0 else {
                 throw ScanFailure(message: "Cannot inspect the scan folder: \(String(cString: strerror(errno))). Cloud-only parent folders are not downloaded.")
             }
             guard metadata.st_mode & S_IFMT == S_IFDIR else {
