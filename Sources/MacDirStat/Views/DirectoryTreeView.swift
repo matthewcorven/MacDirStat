@@ -47,6 +47,13 @@ struct DirectoryRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
+            if node.unscannedDirectoryCount > 0 && !node.isDirectory {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .help("\(node.unscannedDirectoryCount) unreadable folders inside")
+            }
+
             Spacer()
 
             Text(ByteFormatter.string(from: node.size(for: sizeMetric)))

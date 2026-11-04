@@ -12,7 +12,7 @@ private struct LoggingPreferenceScope {
 
     func restore() {
         UserDefaults.standard.set(original, forKey: LoggingSettings.enabledKey)
-        AppLog.isEnabled = original
+        AppLog.reloadPreference()
     }
 }
 
@@ -22,7 +22,7 @@ private struct LoggingPreferenceScope {
     UserDefaults.standard.removeObject(forKey: LoggingSettings.enabledKey)
 
     #expect(!LoggingSettings.isEnabled)
-    AppLog.isEnabled = AppLog.isEnabled // re-apply the persisted value
+    AppLog.reloadPreference() // drop any value cached by another test
     #expect(!AppLog.isEnabled)
 }
 

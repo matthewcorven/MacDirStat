@@ -8,7 +8,10 @@ struct TreemapView: View {
     let detectGitWorktrees: Bool
     let worktreeCount: Int
     let worktreeTotalSize: Int64
+    let worktreeUnusedCount: Int
+    let worktreePrunableCount: Int
     let onDeleteWorktree: (FileNode, Bool) -> Void
+    let onShowWorktrees: () -> Void
 
     @State private var items: [TreemapItem] = []
     @State private var hoveredItemID: Int?
@@ -49,9 +52,15 @@ struct TreemapView: View {
 
                 // Persistent legend so worktrees are always identifiable
                 if detectGitWorktrees {
-                    WorktreeSummaryBadge(count: worktreeCount, totalSize: worktreeTotalSize)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .padding(12)
+                    WorktreeSummaryBadge(
+                        count: worktreeCount,
+                        totalSize: worktreeTotalSize,
+                        unusedCount: worktreeUnusedCount,
+                        prunableCount: worktreePrunableCount,
+                        onOpen: onShowWorktrees
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(12)
                 }
             }
             .onContinuousHover { phase in

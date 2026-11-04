@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var coordinator: ScanCoordinator?
+    @State private var showingWorktrees = false
     @FocusedValue(\.zoomInAction) private var zoomIn
     @FocusedValue(\.zoomOutAction) private var zoomOut
     @FocusedValue(\.resetZoomAction) private var resetZoom
@@ -51,11 +52,12 @@ struct ContentView: View {
 
                             if let root = appState.rootNode,
                                root.unscannedDirectoryCount > 0 || root.totalUnavailableEntryCount > 0 {
-                                Label("Incomplete scan: \(root.unscannedDirectoryCount.formatted()) folders and \(root.totalUnavailableEntryCount.formatted()) entries were not fully scanned. Select a folder for details.",
-                                      systemImage: "exclamationmark.triangle")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                                    .padding(8)
+                                ScanDiagnosticsBanner(
+                                    unreadableFolders: root.unscannedDirectoryCount,
+                                    unreadableEntries: root.totalUnavailableEntryCount,
+                                    hasFullDiskAccess: appState.scanHadFullDiskAccess,
+                                    detectsWorktrees: appState.detectGitWorktrees
+                                )
                             }
 
                             // Treemap
@@ -71,9 +73,12 @@ struct ContentView: View {
                                 detectGitWorktrees: appState.detectGitWorktrees,
                                 worktreeCount: appState.worktreeCount,
                                 worktreeTotalSize: appState.worktreeTotalSize,
+                                worktreeUnusedCount: appState.unusedWorktreeCount,
+                                worktreePrunableCount: appState.prunableWorktreeCount,
                                 onDeleteWorktree: { node, skipTrash in
                                     appState.deleteWorktree(node, skipTrash: skipTrash)
-                                }
+                                },
+                                onShowWorktrees: { showingWorktrees = true }
                             )
                         }
                     }
@@ -140,6 +145,14 @@ struct ContentView: View {
                 .help("Highlight linked git worktrees and show their total size")
 
                 Button {
+                    showingWorktrees = true
+                } label: {
+                    Label("Worktree Report", systemImage: "list.bullet.rectangle")
+                }
+                .disabled(!appState.detectGitWorktrees || appState.rootNode == nil)
+                .help("Show branch, uncommitted changes, last change and size for every worktree")
+
+                Button {
                     zoomIn?()
                 } label: {
                     Label("Zoom In", systemImage: "plus.magnifyingglass")
@@ -185,6 +198,10 @@ struct ContentView: View {
         .onChange(of: appState.detectGitWorktrees) {
             // Start or stop watching for worktrees deleted outside the app.
             coordinator?.updateWorktreeWatch()
+        }
+        .sheet(isPresented: $showingWorktrees) {
+            WorktreeInspectorView(state: appState)
+                .environment(appState)
         }
         .focusedSceneValue(\.openFolderAction, {
             openFolder()

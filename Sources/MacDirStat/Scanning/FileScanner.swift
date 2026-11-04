@@ -79,7 +79,9 @@ struct MountTable: Sendable {
     }
 
     init(mountPoints: Set<String>) {
-        self.mountPoints = Set(mountPoints.map(Self.normalize))
+        // Canonicalize test-supplied points the same way the scan root is
+        // canonicalized, so `/var/x` and `/private/var/x` compare equal.
+        self.mountPoints = Set(mountPoints.map { FilePath.normalized(Self.normalize($0)) })
     }
 
     var count: Int { mountPoints.count }
@@ -174,18 +176,25 @@ private func performScan(
     var scannedDirectories = 0
     do {
         try Task.checkCancellation()
-        // Normalize before lstat so relative roots and trailing separators refer
-        // to the same path used for directory opens and Finder actions.
-        let path = URL(fileURLWithPath: rootPath).path
-        let rootStat = try withoutDatalessMaterialization {
+        var rootStat = try withoutDatalessMaterialization {
             var metadata = Darwin.stat()
-            guard lstat(path, &metadata) == 0 else {
+            guard lstat(rootPath, &metadata) == 0 else {
                 throw ScanFailure(message: "Cannot inspect the scan folder: \(String(cString: strerror(errno))). Cloud-only parent folders are not downloaded.")
             }
             guard metadata.st_mode & S_IFMT == S_IFDIR else {
                 throw ScanFailure(message: "The scan path must be a directory, not a file or symbolic link.")
             }
             return metadata
+        }
+        // Normalize after rejecting a symlink root so the root, its children and
+        // anything git reports later share one canonical form: `/tmp/x` and its
+        // children must not disagree about `/private/tmp/x`.
+        let path = FilePath.normalized(rootPath)
+        // Re-read the metadata under the canonical path; a symlinked parent is
+        // resolved now, and this stat is what the tree reports for the root.
+        if path != rootPath {
+            var canonical = Darwin.stat()
+            if lstat(path, &canonical) == 0 { rootStat = canonical }
         }
         let state = ScanState(rootDevice: rootStat.st_dev, mounts: mounts)
         _ = state.record(rootStat)
@@ -199,7 +208,9 @@ private func performScan(
                 try Task.checkCancellation()
                 while active < limit, let job = pending.popLast() {
                     group.addTask {
-                        try scanDirectory(job, mode: mode, state: state, continuation: continuation)
+                        try scanDirectory(job, mode: mode, state: state,
+                                          detectWorktrees: detectWorktrees,
+                                          continuation: continuation)
                     }
                     active += 1
                 }
@@ -245,6 +256,7 @@ private func scanDirectory(
     _ job: DirectoryJob,
     mode: DirectoryEnumerationMode,
     state: ScanState,
+    detectWorktrees: Bool,
     continuation: AsyncStream<ScanEvent>.Continuation
 ) throws -> DirectoryResult {
     try withoutDatalessMaterialization {
@@ -284,8 +296,14 @@ private func scanDirectory(
             let type = metadata.st_mode & S_IFMT
             guard type == S_IFDIR || type == S_IFREG, state.record(metadata) else { return }
             let child = FileNode(name: name, metadata: metadata)
+            // A `.git` file means this folder may be a linked worktree. Checking
+            // it here costs one small read while the directory is already open,
+            // instead of walking the whole tree again after the scan.
+            if detectWorktrees, name == ".git" {
+                markWorktreeOwnerIfNeeded(job)
+            }
             if child.isDirectory {
-                let childPath = job.path == "/" ? "/" + name : job.path + "/" + name
+                let childPath = FilePath.join(job.path, name)
                 // A sealed system snapshot reports a different device for files
                 // than the mount they appear under, so identify nested volumes by
                 // mount point instead of by device number. Keep the mount point
@@ -368,6 +386,16 @@ private func scanDirectory(
         }
         return result
     }
+}
+
+/// Reads the `.git` pointer the scanner just enumerated and marks the folder as
+/// a worktree root when it points at `<repo>/.git/worktrees/<name>`.
+private func markWorktreeOwnerIfNeeded(_ job: DirectoryJob) {
+    guard !job.node.isGitWorktree,
+          let pointer = GitWorktreeDetector.parsePointer(inDirectory: job.path),
+          pointer.isLinkedWorktree else { return }
+    job.node.isGitWorktree = true
+    AppLog.worktree.info("Worktree root found during scan: \(job.path) -> \(pointer.gitDir)")
 }
 
 private func directoryError(_ code: Int32) -> String {

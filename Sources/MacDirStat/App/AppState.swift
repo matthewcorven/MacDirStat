@@ -23,6 +23,15 @@ enum SizeMetric: String, CaseIterable, Sendable {
     case allocatedSize = "Allocated Size"
 }
 
+/// Which worktrees the summary sheet shows.
+enum WorktreeFilter: String, CaseIterable, Identifiable, Sendable {
+    case all = "All"
+    case unused = "Stale & Clean"
+    case dirty = "Needs Attention"
+
+    var id: String { rawValue }
+}
+
 @Observable
 @MainActor
 final class AppState {
@@ -56,6 +65,16 @@ final class AppState {
     private(set) var worktreeShrinkRevision = 0
     private var detectedWorktrees: [FileNode] = []
 
+    /// Filesystem + git view of every worktree, including prunable registrations
+    /// the scan can't see. Populated asynchronously after a scan.
+    private(set) var worktreeRecords: [WorktreeRecord] = []
+    private(set) var isAnalyzingWorktrees = false
+    var worktreeFilter: WorktreeFilter = .all
+    /// Set when the last scan couldn't read folders that may have hidden worktrees.
+    var scanUnreadableFolderCount: Int = 0
+    var scanHadFullDiskAccess: Bool = FullDiskAccess.isGranted
+    private var analysisTask: Task<Void, Never>?
+
     static let worktreeDefaultsKey = "detectGitWorktrees"
 
     var isScanning: Bool {
@@ -75,20 +94,153 @@ final class AppState {
         worktrees.count
     }
 
+    func worktreeNode(for path: String) -> FileNode? {
+        detectedWorktrees.first { $0.path == path }
+    }
+
+    /// Deletes a worktree by path, whether the scan reached it or only git
+    /// reported it. Prunable entries have no folder to remove, so they are
+    /// dropped from the list and their registration pruned instead.
+    func deleteWorktree(recordPath path: String, skipTrash: Bool = false) {
+        if let node = worktreeNode(for: path) {
+            deleteWorktree(node, skipTrash: skipTrash)
+            return
+        }
+        guard let record = worktreeRecords.first(where: { $0.path == path }) else { return }
+        if record.isPrunable {
+            worktreeRecords.removeAll { $0.path == path }
+            pruneOrphanedWorktrees()
+            return
+        }
+        if let reason = deleteBlockReason(for: path, skipTrash: skipTrash) {
+            AppLog.worktree.notice("Refused to delete dirty worktree \(path): \(reason)")
+            return
+        }
+        Task { [weak self] in
+            let failure: String? = await Task.detached(priority: .userInitiated) {
+                do {
+                    let url = URL(fileURLWithPath: path)
+                    if skipTrash {
+                        try FileManager.default.removeItem(at: url)
+                    } else {
+                        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                    }
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            guard let self else { return }
+            if let failure {
+                AppLog.worktree.error("Could not delete worktree \(path): \(failure)")
+                return
+            }
+            self.worktreeRecords.removeAll { $0.path == path }
+            self.worktreeRevision &+= 1
+            AppLog.worktree.notice("Deleted worktree not present in the scan tree: \(path)")
+        }
+    }
+
+    /// Sizes for the summary sheet, keyed by path so git-only records (prunable
+    /// entries the scan never saw) can be shown without a size.
+    var worktreeSizesByPath: [String: Int64] {
+        _ = worktreeShrinkRevision
+        var sizes: [String: Int64] = [:]
+        for node in detectedWorktrees {
+            sizes[node.path] = node.size(for: sizeMetric)
+        }
+        return sizes
+    }
+
+    var unusedWorktreeCount: Int {
+        let threshold = WorktreeSettings.staleThreshold
+        return worktreeRecords.filter { $0.isUnusedCandidate(staleThreshold: threshold) }.count
+    }
+
+    var prunableWorktreeCount: Int {
+        worktreeRecords.filter(\.isPrunable).count
+    }
+
+    var orphanedWorktreeCount: Int {
+        worktreeRecords.filter(\.isOrphaned).count
+    }
+
     var worktreeTotalSize: Int64 {
         _ = worktreeShrinkRevision
         return worktrees.reduce(0) { $0 + $1.size(for: sizeMetric) }
     }
 
     private func refreshDetectedWorktrees() {
+        analysisTask?.cancel()
         guard detectGitWorktrees, let root = rootNode else {
             detectedWorktrees = []
+            worktreeRecords = []
+            isAnalyzingWorktrees = false
             worktreeRevision &+= 1
             return
         }
         detectedWorktrees = GitWorktreeDetector.worktreeRoots(in: root)
         worktreeRevision &+= 1
         worktreeShrinkRevision &+= 1
+        startWorktreeAnalysis(root: root)
+    }
+
+    /// Cross-checks the scan against git on a background task. Records appear as
+    /// soon as git answers, so the list is usable before the slow status checks
+    /// finish.
+    private func startWorktreeAnalysis(root: FileNode) {
+        analysisTask?.cancel()
+        guard detectGitWorktrees, GitRunner.shared != nil else {
+            // Without git, the filesystem view is all we can report.
+            worktreeRecords = WorktreeAnalyzer.analyze(root: root, runner: nil)
+            isAnalyzingWorktrees = false
+            return
+        }
+        isAnalyzingWorktrees = true
+        let threshold = WorktreeSettings.staleThreshold
+        analysisTask = Task.detached(priority: .utility) { [weak self] in
+            var options = WorktreeAnalyzer.Options()
+            options.staleThreshold = threshold
+            let records = WorktreeAnalyzer.analyze(root: root, options: options)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, !Task.isCancelled else { return }
+                self.worktreeRecords = records
+                self.isAnalyzingWorktrees = false
+                let unused = records.filter {
+                    $0.isUnusedCandidate(staleThreshold: WorktreeSettings.staleThreshold)
+                }
+                AppLog.worktree.notice("Worktree analysis finished: \(records.count) record(s), \(unused.count) unused candidate(s), \(records.filter(\.isPrunable).count) prunable")
+            }
+        }
+    }
+
+    /// Records matching the current filter, ordered so the deletable ones come
+    /// first.
+    var visibleWorktreeRecords: [WorktreeRecord] {
+        let threshold = WorktreeSettings.staleThreshold
+        let matching: [WorktreeRecord]
+        switch worktreeFilter {
+        case .all:
+            matching = worktreeRecords
+        case .unused:
+            matching = worktreeRecords.filter { $0.isUnusedCandidate(staleThreshold: threshold) }
+        case .dirty:
+            matching = worktreeRecords.filter(\.needsAttention)
+        }
+        return matching.sorted { lhs, rhs in
+            let lhsRank = lhs.isPrunable ? 0 : (lhs.isUnusedCandidate(staleThreshold: threshold) ? 1 : 2)
+            let rhsRank = rhs.isPrunable ? 0 : (rhs.isUnusedCandidate(staleThreshold: threshold) ? 1 : 2)
+            return lhsRank == rhsRank ? lhs.path < rhs.path : lhsRank < rhsRank
+        }
+    }
+
+    /// Waits for the background git cross-check so callers (and tests) observe
+    /// final records rather than the filesystem-only snapshot.
+    func waitForWorktreeAnalysis() async {
+        while isAnalyzingWorktrees {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
     }
 
     func drillDown(to node: FileNode) {
@@ -133,9 +285,29 @@ final class AppState {
         treemapRoot = root
         selectedNode = root
         scanStatus = .completed
-        AppLog.state.notice("Published scan root \(root.path): files=\(root.fileCount) directories=\(root.directoryCount) fileSize=\(AppLog.bytes(root.totalSize)) allocated=\(AppLog.bytes(root.totalAllocatedSize)) topChildren=\(root.children.count)")
+        scanUnreadableFolderCount = root.unscannedDirectoryCount
+        scanHadFullDiskAccess = FullDiskAccess.isGranted
+        AppLog.state.notice("Published scan root \(root.path): files=\(root.fileCount) directories=\(root.directoryCount) fileSize=\(AppLog.bytes(root.totalSize)) allocated=\(AppLog.bytes(root.totalAllocatedSize)) topChildren=\(root.children.count) unreadableFolders=\(root.unscannedDirectoryCount) fullDiskAccess=\(scanHadFullDiskAccess)")
+        if root.unscannedDirectoryCount > 0 {
+            // Without these folders worktrees inside them are invisible, so the
+            // count is surfaced in the UI rather than only in the log.
+            AppLog.scan.notice("\(root.unscannedDirectoryCount) folder(s) unreadable; worktrees inside them may be missed (fullDiskAccess=\(scanHadFullDiskAccess))")
+        }
         refreshDetectedWorktrees()
         rebuildBreadcrumbs()
+    }
+
+    /// Whether a delete should be refused. Dirty worktrees lose uncommitted
+    /// work, so they are blocked unless the user explicitly deletes immediately.
+    func deleteBlockReason(for path: String, skipTrash: Bool) -> String? {
+        guard let record = worktreeRecords.first(where: { $0.path == path }) else { return nil }
+        if skipTrash { return nil }
+        if record.isPrunable { return nil }
+        if record.uncommittedChanges == 0 { return nil }
+        if record.uncommittedChanges == nil {
+            return "Uncommitted changes could not be verified. Reveal the worktree to check before deleting."
+        }
+        return "This worktree has uncommitted changes. Commit, stash or discard them first."
     }
 
     /// Moves a worktree root to the Trash, or deletes it outright when the user
@@ -144,6 +316,10 @@ final class AppState {
     func deleteWorktree(_ node: FileNode, skipTrash: Bool = false) {
         guard node.isGitWorktree, node.parent != nil else { return }
         let path = node.path
+        if let reason = deleteBlockReason(for: path, skipTrash: skipTrash) {
+            AppLog.worktree.notice("Refused to delete dirty worktree \(path): \(reason)")
+            return
+        }
         // Deleting a large worktree can take a while, so keep the UI responsive
         // and only drop the node once the filesystem operation succeeded.
         Task {
@@ -179,6 +355,7 @@ final class AppState {
         guard let root = rootNode else { return }
         root.computeAggregates()
         detectedWorktrees.removeAll { $0 === node || self.isDescendant($0, of: node) }
+        worktreeRecords.removeAll { $0.path == node.path || $0.path.hasPrefix(node.path + "/") }
         let remainingWorktrees = detectedWorktrees.count
         AppLog.state.notice("Removed \(node.path) from tree: rootFiles=\(root.fileCount) rootAllocated=\(AppLog.bytes(root.totalAllocatedSize)) worktrees=\(remainingWorktrees)")
         worktreeRevision &+= 1
@@ -191,6 +368,37 @@ final class AppState {
             selectedNode = parent
         }
         rebuildBreadcrumbs()
+    }
+
+    /// Prunes git registrations for worktrees whose folder is gone.
+    func pruneOrphanedWorktrees() {
+        guard let runner = GitRunner.shared else { return }
+        let prunable = worktreeRecords.filter(\.isPrunable)
+        guard !prunable.isEmpty else { return }
+        let targets = Set(prunable.compactMap(\.mainRepository))
+            .filter { DirectoryProbe.isDirectory($0) }
+        Task { [weak self] in
+            let failures = await Task.detached(priority: .userInitiated) {
+                var failures: [String] = []
+                for repository in targets {
+                    do {
+                        let output = try WorktreeAnalyzer.prune(in: repository, runner: runner)
+                        AppLog.worktree.notice("Pruned worktrees in \(repository): \(output)")
+                    } catch {
+                        failures.append("\(repository): \(error)")
+                    }
+                }
+                return failures
+            }.value
+            for failure in failures {
+                AppLog.worktree.error("Worktree prune failed for \(failure)")
+            }
+            guard let self else { return }
+            self.worktreeRecords.removeAll(where: \.isPrunable)
+            self.worktreeRevision &+= 1
+            self.worktreeShrinkRevision &+= 1
+            AppLog.worktree.notice("Removed \(prunable.count) prunable worktree record(s) from the list")
+        }
     }
 
     /// Drops worktrees deleted outside MacDirStat. Only paths already known to
@@ -215,6 +423,8 @@ final class AppState {
     }
 
     func reset() {
+        analysisTask?.cancel()
+        analysisTask = nil
         AppLog.state.notice("Resetting scan state")
         scanStatus = .idle
         rootNode = nil
@@ -222,6 +432,9 @@ final class AppState {
         selectedNode = nil
         breadcrumbs = []
         detectedWorktrees = []
+        worktreeRecords = []
+        isAnalyzingWorktrees = false
+        scanUnreadableFolderCount = 0
         worktreeRevision &+= 1
         worktreeShrinkRevision &+= 1
     }

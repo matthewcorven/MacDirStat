@@ -25,6 +25,17 @@ final class FileNode: Identifiable, @unchecked Sendable {
     private(set) var fileCount: Int = 0
     private(set) var directoryCount: Int = 0
 
+    /// Distance from the scan root, used to bound recursive post-processing.
+    var depth: Int {
+        var depth = 0
+        var node = parent
+        while let current = node {
+            depth += 1
+            node = current.parent
+        }
+        return depth
+    }
+
     var path: String {
         var components: [String] = []
         var node: FileNode? = self
@@ -34,9 +45,7 @@ final class FileNode: Identifiable, @unchecked Sendable {
         }
         let parts = components.reversed()
         guard let root = parts.first else { return "" }
-        return parts.dropFirst().reduce(root) { path, name in
-            path == "/" ? path + name : path + "/" + name
-        }
+        return parts.dropFirst().reduce(root) { FilePath.join($0, $1) }
     }
 
     init(

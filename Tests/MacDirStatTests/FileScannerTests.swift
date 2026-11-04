@@ -362,8 +362,9 @@ func localIntegrationScan() async throws {
     let dir = "/scans/repo-feature"
     #expect(GitWorktreeDetector.isLinkedWorktree(
         gitFileContents: "gitdir: /scans/repo/.git/worktrees/repo-feature\n", inDirectory: dir))
+    // A relative pointer resolves against the worktree, so no absolute path is needed.
     #expect(GitWorktreeDetector.isLinkedWorktree(
-        gitFileContents: "gitdir: ../repo/.git/worktrees/feature", inDirectory: dir))
+        gitFileContents: "gitdir: ../repo/.git/worktrees/feature", inDirectory: "/scans/repo-feature"))
     #expect(!GitWorktreeDetector.isLinkedWorktree(
         gitFileContents: "gitdir: /scans/repo/.git/modules/vendor/lib\n", inDirectory: dir))
     #expect(!GitWorktreeDetector.isLinkedWorktree(

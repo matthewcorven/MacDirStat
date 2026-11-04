@@ -45,6 +45,11 @@ enum AppLog {
         set { gate.value = newValue }
     }
 
+    /// Re-reads the persisted setting, discarding any cached value.
+    static func reloadPreference() {
+        gate.value = nil
+    }
+
     /// Persists the setting and applies it to every later log call.
     static func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: LoggingSettings.enabledKey)
