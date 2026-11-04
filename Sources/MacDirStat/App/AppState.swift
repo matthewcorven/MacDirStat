@@ -47,7 +47,7 @@ final class AppState {
             let enabled = self.detectGitWorktrees
             let count = self.worktreeCount
             let total = self.worktreeTotalSize
-            AppLog.state.notice("Worktree detection toggled: enabled=\(enabled) worktrees=\(count) total=\(AppLog.bytes(total), privacy: .public)")
+            AppLog.state.notice("Worktree detection toggled: enabled=\(enabled) worktrees=\(count) total=\(AppLog.bytes(total))")
         }
     }
     /// Bumped whenever worktree marks change or a worktree is removed so
@@ -94,7 +94,7 @@ final class AppState {
     func drillDown(to node: FileNode) {
         guard node.isDirectory else { return }
         let size = node.size(for: sizeMetric)
-        AppLog.ui.info("Drill down: \(node.path, privacy: .public) size=\(AppLog.bytes(size), privacy: .public)")
+        AppLog.ui.info("Drill down: \(node.path) size=\(AppLog.bytes(size))")
         withAnimation(.spring(duration: 0.3)) {
             treemapRoot = node
             selectedNode = node
@@ -103,7 +103,7 @@ final class AppState {
     }
 
     func navigateTo(breadcrumb node: FileNode) {
-        AppLog.ui.info("Breadcrumb navigation: \(node.path, privacy: .public)")
+        AppLog.ui.info("Breadcrumb navigation: \(node.path)")
         withAnimation(.spring(duration: 0.3)) {
             treemapRoot = node
             selectedNode = node
@@ -113,7 +113,7 @@ final class AppState {
 
     func navigateUp() {
         guard let current = treemapRoot, let parent = current.parent else { return }
-        AppLog.ui.info("Navigate up: \(current.path, privacy: .public) -> \(parent.path, privacy: .public)")
+        AppLog.ui.info("Navigate up: \(current.path) -> \(parent.path)")
         withAnimation(.spring(duration: 0.3)) {
             treemapRoot = parent
             selectedNode = parent
@@ -133,7 +133,7 @@ final class AppState {
         treemapRoot = root
         selectedNode = root
         scanStatus = .completed
-        AppLog.state.notice("Published scan root \(root.path, privacy: .public): files=\(root.fileCount) directories=\(root.directoryCount) fileSize=\(AppLog.bytes(root.totalSize), privacy: .public) allocated=\(AppLog.bytes(root.totalAllocatedSize), privacy: .public) topChildren=\(root.children.count)")
+        AppLog.state.notice("Published scan root \(root.path): files=\(root.fileCount) directories=\(root.directoryCount) fileSize=\(AppLog.bytes(root.totalSize)) allocated=\(AppLog.bytes(root.totalAllocatedSize)) topChildren=\(root.children.count)")
         refreshDetectedWorktrees()
         rebuildBreadcrumbs()
     }
@@ -161,17 +161,17 @@ final class AppState {
                 }
             }.value
             if let failure {
-                AppLog.worktree.error("Could not delete worktree \(path, privacy: .public): \(failure, privacy: .public)")
+                AppLog.worktree.error("Could not delete worktree \(path): \(failure)")
                 return
             }
-            AppLog.worktree.notice("Deleted worktree \(path, privacy: .public) (trash=\(!skipTrash)); total now \(AppLog.bytes(self.worktreeTotalSize), privacy: .public)")
+            AppLog.worktree.notice("Deleted worktree \(path) (trash=\(!skipTrash)); total now \(AppLog.bytes(self.worktreeTotalSize))")
             removeFromTree(node)
         }
     }
 
     func removeFromTree(_ node: FileNode) {
         guard let parent = node.parent else {
-            AppLog.state.error("Ignoring removal of \(node.path, privacy: .public): node has no parent")
+            AppLog.state.error("Ignoring removal of \(node.path): node has no parent")
             return
         }
         parent.children.removeAll { $0 === node }
@@ -180,7 +180,7 @@ final class AppState {
         root.computeAggregates()
         detectedWorktrees.removeAll { $0 === node || self.isDescendant($0, of: node) }
         let remainingWorktrees = detectedWorktrees.count
-        AppLog.state.notice("Removed \(node.path, privacy: .public) from tree: rootFiles=\(root.fileCount) rootAllocated=\(AppLog.bytes(root.totalAllocatedSize), privacy: .public) worktrees=\(remainingWorktrees)")
+        AppLog.state.notice("Removed \(node.path) from tree: rootFiles=\(root.fileCount) rootAllocated=\(AppLog.bytes(root.totalAllocatedSize)) worktrees=\(remainingWorktrees)")
         worktreeRevision &+= 1
         worktreeShrinkRevision &+= 1
 
@@ -203,7 +203,7 @@ final class AppState {
             var metadata = Darwin.stat()
             guard lstat(node.path, &metadata) != 0 || metadata.st_mode & S_IFMT != S_IFDIR,
                   node.parent != nil else { continue }
-            AppLog.worktree.notice("Worktree disappeared from disk: \(node.path, privacy: .public)")
+            AppLog.worktree.notice("Worktree disappeared from disk: \(node.path)")
             removeFromTree(node)
             vanished = true
         }

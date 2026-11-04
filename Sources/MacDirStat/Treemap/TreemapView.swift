@@ -233,9 +233,9 @@ struct TreemapView: View {
             await MainActor.run {
                 items = newItems
                 let worktrees = newItems.filter(\.node.isGitWorktree)
-                AppLog.layout.info("Treemap laid out in \(AppLog.duration(elapsed), privacy: .public): root=\(root.path, privacy: .public) items=\(newItems.count) canvas=\(Int(canvasSize.width))x\(Int(canvasSize.height)) metric=\(metric.rawValue, privacy: .public) worktreeItems=\(worktrees.count) worktreeArea=\(AppLog.bytes(Int64(worktrees.reduce(0) { $0 + $1.rect.area })), privacy: .public)")
+                AppLog.layout.info("Treemap laid out in \(AppLog.duration(elapsed)): root=\(root.path) items=\(newItems.count) canvas=\(Int(canvasSize.width))x\(Int(canvasSize.height)) metric=\(metric.rawValue) worktreeItems=\(worktrees.count) worktreeArea=\(AppLog.bytes(Int64(worktrees.reduce(0) { $0 + $1.rect.area })))")
                 if let largest = newItems.max(by: { $0.rect.area < $1.rect.area }) {
-                    AppLog.layout.debug("Largest item: \(largest.node.path, privacy: .public) area=\(Int(largest.rect.area)) rect=(\(Int(largest.rect.x)),\(Int(largest.rect.y)),\(Int(largest.rect.width))x\(Int(largest.rect.height))) depth=\(largest.depth) size=\(AppLog.bytes(largest.node.size(for: metric)), privacy: .public)")
+                    AppLog.layout.debug("Largest item: \(largest.node.path) area=\(Int(largest.rect.area)) rect=(\(Int(largest.rect.x)),\(Int(largest.rect.y)),\(Int(largest.rect.width))x\(Int(largest.rect.height))) depth=\(largest.depth) size=\(AppLog.bytes(largest.node.size(for: metric)))")
                 }
             }
         }

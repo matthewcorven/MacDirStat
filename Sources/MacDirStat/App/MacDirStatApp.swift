@@ -11,10 +11,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate()
+        // Logging is off by default. Read the persisted choice once so every
+        // later message can check a cached value; this launch itself is only
+        // recorded when the switch was already on.
+        AppLog.isEnabled = LoggingSettings.isEnabled
         let bundle = Bundle.main
         let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let identifier = bundle.bundleIdentifier ?? "no bundle id"
-        AppLog.state.notice("Launched MacDirStat \(version, privacy: .public) (\(identifier, privacy: .public)) pid=\(ProcessInfo.processInfo.processIdentifier) fullDiskAccess=\(FullDiskAccess.isGranted) bundle=\(bundle.bundlePath, privacy: .public)")
+        AppLog.state.notice("Launched MacDirStat \(version) (\(identifier)) pid=\(ProcessInfo.processInfo.processIdentifier) fullDiskAccess=\(FullDiskAccess.isGranted) bundle=\(bundle.bundlePath)")
     }
 
     // Same lookup as SPM's Bundle.module, which calls fatalError when the resource bundle
@@ -46,6 +50,10 @@ struct MacDirStatApp: App {
         .defaultSize(width: 1200, height: 800)
         .commands {
             OpenFolderCommands()
+        }
+
+        Settings {
+            SettingsView()
         }
     }
 }

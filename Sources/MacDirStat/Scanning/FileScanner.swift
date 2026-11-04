@@ -170,7 +170,7 @@ private func performScan(
 ) async {
     defer { continuation.finish() }
     let started = ContinuousClock.now
-    AppLog.scan.notice("Scan starting: path=\(rootPath, privacy: .public) concurrency=\(limit) mode=\(String(describing: mode), privacy: .public) detectWorktrees=\(detectWorktrees)")
+    AppLog.scan.notice("Scan starting: path=\(rootPath) concurrency=\(limit) mode=\(String(describing: mode)) detectWorktrees=\(detectWorktrees)")
     var scannedDirectories = 0
     do {
         try Task.checkCancellation()
@@ -189,7 +189,7 @@ private func performScan(
         }
         let state = ScanState(rootDevice: rootStat.st_dev, mounts: mounts)
         _ = state.record(rootStat)
-        AppLog.scan.info("Scan root: normalized=\(path, privacy: .public) device=\(rootStat.st_dev) inode=\(rootStat.st_ino) blocks=\(rootStat.st_blocks) isDataless=\(rootStat.st_flags & UInt32(SF_DATALESS) != 0) mounts=\(mounts.count)")
+        AppLog.scan.info("Scan root: normalized=\(path) device=\(rootStat.st_dev) inode=\(rootStat.st_ino) blocks=\(rootStat.st_blocks) isDataless=\(rootStat.st_flags & UInt32(SF_DATALESS) != 0) mounts=\(mounts.count)")
         let root = FileNode(name: path, metadata: rootStat)
         var pending = [DirectoryJob(path: path, node: root)]
 
@@ -207,7 +207,7 @@ private func performScan(
                     active -= 1
                     scannedDirectories += 1
                     if let issue = result.issue {
-                        AppLog.scan.info("Folder incomplete: \(result.job.path, privacy: .public) issue=\(issue, privacy: .public) subdirectories=\(result.subdirectories.count) unavailable=\(result.unavailableEntries)")
+                        AppLog.scan.info("Folder incomplete: \(result.job.path) issue=\(issue) subdirectories=\(result.subdirectories.count) unavailable=\(result.unavailableEntries)")
                     }
                     result.job.node.scanIssue = result.issue
                     result.job.node.unavailableEntryCount = result.unavailableEntries
@@ -221,22 +221,22 @@ private func performScan(
         // worktree detection can run without touching the tree concurrently.
         if detectWorktrees {
             let worktrees = GitWorktreeDetector.markWorktrees(in: root)
-            AppLog.worktree.notice("Detected \(worktrees.count, privacy: .public) git worktree(s): \(worktrees.map(\.path).joined(separator: ", "), privacy: .public)")
+            AppLog.worktree.notice("Detected \(worktrees.count) git worktree(s): \(worktrees.map(\.path).joined(separator: ", "))")
         }
         root.computeAggregates()
         root.sortChildrenBySize(metric: .allocatedSize)
         try Task.checkCancellation()
-        AppLog.scan.notice("Scan finished in \(AppLog.duration(ContinuousClock.now - started), privacy: .public): files=\(root.fileCount) directories=\(root.directoryCount) totalSize=\(AppLog.bytes(root.totalSize), privacy: .public) allocated=\(AppLog.bytes(root.totalAllocatedSize), privacy: .public) cloudOnlyFiles=\(root.cloudOnlyFileCount) incompleteFolders=\(root.unscannedDirectoryCount) unavailableEntries=\(root.totalUnavailableEntryCount) scannedDirectories=\(scannedDirectories)")
+        AppLog.scan.notice("Scan finished in \(AppLog.duration(ContinuousClock.now - started)): files=\(root.fileCount) directories=\(root.directoryCount) totalSize=\(AppLog.bytes(root.totalSize)) allocated=\(AppLog.bytes(root.totalAllocatedSize)) cloudOnlyFiles=\(root.cloudOnlyFileCount) incompleteFolders=\(root.unscannedDirectoryCount) unavailableEntries=\(root.totalUnavailableEntryCount) scannedDirectories=\(scannedDirectories)")
         if let progress = state.progress(path: path, force: true) { continuation.yield(progress) }
         continuation.yield(.completed(root: root))
     } catch is CancellationError {
         // Cancellation is terminal: never publish a partial tree as completed.
-        AppLog.scan.notice("Scan cancelled after \(AppLog.duration(ContinuousClock.now - started), privacy: .public): scannedDirectories=\(scannedDirectories)")
+        AppLog.scan.notice("Scan cancelled after \(AppLog.duration(ContinuousClock.now - started)): scannedDirectories=\(scannedDirectories)")
     } catch let error as ScanFailure {
-        AppLog.scan.error("Scan failed: \(error.message, privacy: .public)")
+        AppLog.scan.error("Scan failed: \(error.message)")
         continuation.yield(.error(error.message))
     } catch {
-        AppLog.scan.error("Scan failed: \(error.localizedDescription, privacy: .public)")
+        AppLog.scan.error("Scan failed: \(error.localizedDescription)")
         continuation.yield(.error(error.localizedDescription))
     }
 }
@@ -256,14 +256,14 @@ private func scanDirectory(
         // them could fetch a remote listing, so retain a visible placeholder.
         guard !job.node.isDataless else {
             result.issue = "Cloud-only folder: contents were not downloaded or scanned."
-            AppLog.scan.info("Skipping cloud-only folder: \(job.path, privacy: .public)")
+            AppLog.scan.info("Skipping cloud-only folder: \(job.path)")
             return result
         }
         // Do not follow a directory replaced with a symlink after enumeration.
         let fd = open(job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
             result.issue = directoryError(errno)
-            AppLog.scan.info("Cannot open folder: \(job.path, privacy: .public) errno=\(errno) issue=\(result.issue ?? "", privacy: .public)")
+            AppLog.scan.info("Cannot open folder: \(job.path) errno=\(errno) issue=\(result.issue ?? "")")
             return result
         }
         defer { close(fd) }
@@ -271,13 +271,13 @@ private func scanDirectory(
         guard fstat(fd, &currentStat) == 0,
               UInt64(currentStat.st_ino) == job.node.id else {
             result.issue = "Folder changed during the scan; rescan to measure its contents."
-            AppLog.scan.info("Folder identity changed during scan: \(job.path, privacy: .public) expectedInode=\(job.node.id) actualInode=\(currentStat.st_ino) expectedDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
+            AppLog.scan.info("Folder identity changed during scan: \(job.path) expectedInode=\(job.node.id) actualInode=\(currentStat.st_ino) expectedDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
             return result
         }
         // Sealed system snapshots report a different device for the same mount,
         // so note the drift without rejecting an otherwise unchanged directory.
         if currentStat.st_dev != state.rootDevice {
-            AppLog.scan.debug("Folder device differs from scan root: \(job.path, privacy: .public) rootDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
+            AppLog.scan.debug("Folder device differs from scan root: \(job.path) rootDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
         }
 
         func append(name: String, metadata: Darwin.stat) {
@@ -291,7 +291,7 @@ private func scanDirectory(
                 // mount point instead of by device number. Keep the mount point
                 // visible but do not descend into another volume.
                 if state.mounts.isMountPoint(childPath) {
-                    AppLog.scan.debug("Not descending into mounted volume: \(childPath, privacy: .public)")
+                    AppLog.scan.debug("Not descending into mounted volume: \(childPath)")
                 } else {
                     result.subdirectories.append(DirectoryJob(path: childPath, node: child))
                 }
@@ -313,7 +313,7 @@ private func scanDirectory(
                     result.issue = directoryError(code)
                     return result
                 case .unsupported:
-                    AppLog.scan.debug("Bulk enumeration unsupported, falling back to readdir: \(job.path, privacy: .public)")
+                    AppLog.scan.debug("Bulk enumeration unsupported, falling back to readdir: \(job.path)")
                     break bulk
                 }
             }

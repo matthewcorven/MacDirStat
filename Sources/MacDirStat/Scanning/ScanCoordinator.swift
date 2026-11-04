@@ -15,7 +15,7 @@ final class ScanCoordinator {
         appState.reset()
         appState.detectGitWorktrees = detectGitWorktrees
         appState.scanStatus = .scanning(fileCount: 0, byteCount: 0, currentPath: path)
-        AppLog.state.notice("Scan requested: path=\(path, privacy: .public) detectWorktrees=\(detectGitWorktrees)")
+        AppLog.state.notice("Scan requested: path=\(path) detectWorktrees=\(detectGitWorktrees)")
 
         let scanner = FileScanner(rootPath: path, detectGitWorktrees: detectGitWorktrees)
         scanTask = Task {
@@ -29,7 +29,7 @@ final class ScanCoordinator {
                 case let .progress(fileCount, byteCount, currentPath):
                     let now = ContinuousClock.now
                     if now - lastUpdate >= throttleInterval {
-                        AppLog.scan.debug("Progress: files=\(fileCount) allocated=\(AppLog.bytes(byteCount), privacy: .public) current=\(currentPath, privacy: .public)")
+                        AppLog.scan.debug("Progress: files=\(fileCount) allocated=\(AppLog.bytes(byteCount)) current=\(currentPath)")
                         appState.scanStatus = .scanning(
                             fileCount: fileCount,
                             byteCount: byteCount,
@@ -43,11 +43,11 @@ final class ScanCoordinator {
                     appState.setScanCompleted(root: root)
                     let worktreeCount = appState.worktreeCount
                     let worktreeTotal = appState.worktreeTotalSize
-                    AppLog.state.notice("Published tree: worktrees=\(worktreeCount) worktreeTotal=\(AppLog.bytes(worktreeTotal), privacy: .public)")
+                    AppLog.state.notice("Published tree: worktrees=\(worktreeCount) worktreeTotal=\(AppLog.bytes(worktreeTotal))")
                     updateWorktreeWatch()
 
                 case let .error(message):
-                    AppLog.state.error("Scan error surfaced to UI: \(message, privacy: .public)")
+                    AppLog.state.error("Scan error surfaced to UI: \(message)")
                     appState.scanStatus = .error(message)
                 }
             }
