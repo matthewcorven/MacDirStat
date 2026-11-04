@@ -50,11 +50,11 @@ struct ContentView: View {
                                 }
                             )
 
-                            if let root = appState.rootNode,
-                               root.unscannedDirectoryCount > 0 || root.totalUnavailableEntryCount > 0 {
+                            if let root = appState.rootNode {
                                 ScanDiagnosticsBanner(
-                                    unreadableFolders: root.unscannedDirectoryCount,
-                                    unreadableEntries: root.totalUnavailableEntryCount,
+                                    incompleteFolders: root.unscannedDirectoryCount,
+                                    unavailableEntries: root.totalUnavailableEntryCount,
+                                    ownerOnlyFolders: root.expectedUnreadableDirectoryCount,
                                     hasFullDiskAccess: appState.scanHadFullDiskAccess,
                                     detectsWorktrees: appState.detectGitWorktrees
                                 )

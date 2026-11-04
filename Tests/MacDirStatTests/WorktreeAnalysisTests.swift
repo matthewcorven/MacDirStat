@@ -400,7 +400,7 @@ func worktreeDetectionCostsNoSecondTreeWalk() async throws {
 }
 
 @Test(.enabled(if: gitAvailable))
-func unreadableFoldersAreReportedAndHideWorktrees() async throws {
+func ownerOnlyFoldersHideWorktreesButAreNotReported() async throws {
     let fixture = try WorktreeFixture()
     defer { fixture.remove() }
     let hidden = fixture.root.appendingPathComponent("private-area")
@@ -410,8 +410,12 @@ func unreadableFoldersAreReportedAndHideWorktrees() async throws {
     defer { chmod(hidden.path, 0o700) }
 
     let scanned = try await fixture.scan()
-    #expect(scanned.unscannedDirectoryCount >= 1)
-    // Which is exactly why the UI has to say so rather than silently omitting it.
+    // An owner-only folder is expected to be unreadable, so it must not raise a
+    // warning the user cannot act on, but the folder still explains itself.
+    #expect(scanned.unscannedDirectoryCount == 0)
+    let hiddenNode = try #require(scanned.children.first { $0.name == "private-area" })
+    #expect(hiddenNode.scanIssue != nil)
+    // The worktree inside is still invisible, which is why git is consulted.
     let records = WorktreeAnalyzer.analyze(root: scanned)
     let missed = records.first { $0.path.hasSuffix("hidden-wt") }
     #expect(missed == nil || missed?.scanMissedReason != nil)

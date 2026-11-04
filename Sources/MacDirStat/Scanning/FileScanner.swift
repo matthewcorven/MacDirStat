@@ -159,8 +159,10 @@ private struct DirectoryResult: Sendable {
     let job: DirectoryJob
     var children: [FileNode] = []
     var subdirectories: [DirectoryJob] = []
-    var issue: String?
+    var block: ScanBlock?
     var unavailableEntries = 0
+
+    var issue: String? { block?.message }
 }
 
 private func performScan(
@@ -222,10 +224,13 @@ private func performScan(
                 if let result = try await group.next() {
                     active -= 1
                     scannedDirectories += 1
-                    if let issue = result.issue {
-                        AppLog.scan.info("Folder incomplete: \(result.job.path) issue=\(issue) subdirectories=\(result.subdirectories.count) unavailable=\(result.unavailableEntries)")
+                    if let block = result.block {
+                        let reported = block.countsAsIncomplete ? "reported" : "expected"
+                        AppLog.scan.info("Folder not fully read (\(reported)): \(result.job.path) kind=\(String(describing: block.kind)) message=\(block.message)")
                     }
-                    result.job.node.scanIssue = result.issue
+                    result.job.node.scanIssue = result.block?.message
+                    result.job.node.scanIssueCountsAsIncomplete = result.block?.countsAsIncomplete ?? false
+                    result.job.node.scanSkippedAsDuplicate = result.block?.kind == .syntheticDuplicate
                     result.job.node.unavailableEntryCount = result.unavailableEntries
                     for child in result.children { result.job.node.addChild(child) }
                     pending.append(contentsOf: result.subdirectories)
@@ -269,25 +274,38 @@ private func scanDirectory(
         var result = DirectoryResult(job: job)
         if let progress = state.progress(path: job.path) { continuation.yield(progress) }
 
+        // The sealed system volume exposes the writable data volume a second
+        // time under this path, so every protected folder there appears twice.
+        // It duplicates `/System/Volumes/Data`, which is scanned on its own, so
+        // walking it only doubles the noise and the time.
+        if isSyntheticDataDuplicate(job.path, mounts: state.mounts) {
+            result.block = ScanBlock(
+                kind: .syntheticDuplicate,
+                message: "mirror of /System/Volumes/Data; contents are measured from the real volume"
+            )
+            AppLog.scan.info("Not descending into the data-volume mirror: \(job.path)")
+            return result
+        }
         // Cloud-only directories have no locally enumerated children. Opening
         // them could fetch a remote listing, so retain a visible placeholder.
         guard !job.node.isDataless else {
-            result.issue = "Cloud-only folder: contents were not downloaded or scanned."
-            AppLog.scan.info("Skipping cloud-only folder: \(job.path)")
+            result.block = .cloudOnly
+            AppLog.scan.debug("Skipping cloud-only folder: \(job.path)")
             return result
         }
         // Do not follow a directory replaced with a symlink after enumeration.
         let fd = open(job.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
-            result.issue = directoryError(errno)
-            AppLog.scan.info("Cannot open folder: \(job.path) errno=\(errno) issue=\(result.issue ?? "")")
+            let code = errno
+            result.block = ScanBlock.forOpenFailure(errno: code, path: job.path)
+            AppLog.scan.debug("Cannot open folder: \(job.path) errno=\(code) kind=\(String(describing: result.block?.kind)) reportable=\(result.block?.countsAsIncomplete ?? true)")
             return result
         }
         defer { close(fd) }
         var currentStat = Darwin.stat()
         guard fstat(fd, &currentStat) == 0,
               UInt64(currentStat.st_ino) == job.node.id else {
-            result.issue = "Folder changed during the scan; rescan to measure its contents."
+            result.block = .changedMidScan
             AppLog.scan.info("Folder identity changed during scan: \(job.path) expectedInode=\(job.node.id) actualInode=\(currentStat.st_ino) expectedDevice=\(state.rootDevice) actualDevice=\(currentStat.st_dev)")
             return result
         }
@@ -340,7 +358,7 @@ private func scanDirectory(
                     if let progress = state.progress(path: job.path) { continuation.yield(progress) }
                 case .end: return result
                 case .failure(let code):
-                    result.issue = directoryError(code)
+                    result.block = ScanBlock.forFailure(errno: code)
                     return result
                 case .unsupported:
                     AppLog.scan.debug("Bulk enumeration unsupported, falling back to readdir: \(job.path)")
@@ -352,13 +370,13 @@ private func scanDirectory(
         // A fresh descriptor also lets unsupported filesystems use POSIX safely.
         let enumerationFD = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard enumerationFD >= 0 else {
-            result.issue = directoryError(errno)
+            result.block = ScanBlock.forFailure(errno: errno)
             return result
         }
         guard let dir = fdopendir(enumerationFD) else {
             let error = errno
             close(enumerationFD)
-            result.issue = directoryError(error)
+            result.block = ScanBlock.forFailure(errno: error)
             return result
         }
         defer { closedir(dir) }
@@ -367,7 +385,7 @@ private func scanDirectory(
             try Task.checkCancellation()
             errno = 0
             guard let entry = readdir(dir) else {
-                if errno != 0 { result.issue = directoryError(errno) }
+                if errno != 0 { result.block = ScanBlock.forFailure(errno: errno) }
                 break
             }
             entries += 1
@@ -410,9 +428,10 @@ private func markWorktreeOwnerIfNeeded(_ job: DirectoryJob) {
     AppLog.worktree.info("Worktree root found during scan: \(job.path) -> \(pointer.gitDir)")
 }
 
-private func directoryError(_ code: Int32) -> String {
-    if code == EDEADLK {
-        return "Cloud folder needs a download to enumerate; contents were not scanned."
-    }
-    return "Folder contents could not be scanned: \(String(cString: strerror(code)))."
+/// The sealed system volume presents the writable data volume again under
+/// `/System/Library/Templates/Data`, which mirrors `/System/Volumes/Data`.
+/// Scanning both would double every protected folder in the warning.
+private func isSyntheticDataDuplicate(_ path: String, mounts: MountTable) -> Bool {
+    guard path == "/System/Library/Templates/Data" else { return false }
+    return mounts.isMountPoint("/System/Volumes/Data")
 }

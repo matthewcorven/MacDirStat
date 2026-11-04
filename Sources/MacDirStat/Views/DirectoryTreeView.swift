@@ -63,7 +63,10 @@ struct DirectoryRow: View {
     }
 
     private var iconName: String {
-        if node.scanIssue != nil { return "folder.badge.questionmark" }
+        // Only actionable gaps get the warning badge; a folder that is
+        // permanently root-only is normal and would otherwise make the whole
+        // system tree look broken.
+        if node.scanIssueCountsAsIncomplete { return "folder.badge.questionmark" }
         if node.isGitWorktree { return GitWorktreeStyle.sfSymbol }
         return "folder.fill"
     }

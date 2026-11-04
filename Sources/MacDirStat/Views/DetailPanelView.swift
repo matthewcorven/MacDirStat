@@ -54,13 +54,31 @@ struct DetailPanelView: View {
                     LabeledContent("Cloud-only files", value: node.cloudOnlyFileCount.formatted())
                 }
                 if let issue = node.scanIssue {
-                    Text(issue).font(.caption).foregroundStyle(.orange)
+                    Label(
+                        node.scanIssueCountsAsIncomplete ? "Contents not included" : "Contents not included (expected)",
+                        systemImage: node.scanIssueCountsAsIncomplete ? "exclamationmark.triangle" : "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(node.scanIssueCountsAsIncomplete ? .orange : .secondary)
+                    Text(issue)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                if node.unscannedDirectoryCount > 0 || node.totalUnavailableEntryCount > 0 {
+                if node.unscannedDirectoryCount > 0 {
                     Label("Incomplete scan", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
-                    Text("\(node.unscannedDirectoryCount.formatted()) folders and \(node.totalUnavailableEntryCount.formatted()) entries could not be fully scanned. Totals include only accessible metadata.")
+                    Text("\(node.unscannedDirectoryCount.formatted()) folder\(node.unscannedDirectoryCount == 1 ? "" : "s") could not be read because macOS blocked access. Totals include only accessible metadata.")
                         .font(.caption)
+                }
+                if node.totalUnavailableEntryCount > 0 {
+                    Text("\(node.totalUnavailableEntryCount.formatted()) entr\(node.totalUnavailableEntryCount == 1 ? "y" : "ies") were skipped while listing folders.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if node.expectedUnreadableDirectoryCount > 0 {
+                    Label("\(node.expectedUnreadableDirectoryCount.formatted()) folder\(node.expectedUnreadableDirectoryCount == 1 ? "" : "s") readable only by their owner", systemImage: "lock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 if let date = node.modificationDate {

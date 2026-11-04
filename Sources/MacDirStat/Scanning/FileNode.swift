@@ -13,8 +13,20 @@ final class FileNode: Identifiable, @unchecked Sendable {
     /// directory is the root of a linked git worktree.
     var isGitWorktree = false
     var scanIssue: String?
+    /// Set when `scanIssue` counts toward the incomplete-scan warning.
+    /// Folders left out for a permanent reason still show their own note. Folders
+    /// that are permanently unreadable by design stay out of the total.
+    var scanIssueCountsAsIncomplete = true
+    /// Set when the folder's contents are deliberately not scanned because they
+    /// are a synthetic duplicate of a path scanned elsewhere.
+    var scanSkippedAsDuplicate = false
     var unavailableEntryCount = 0
     private(set) var unscannedDirectoryCount = 0
+    /// Folders that were not read for a permanent reason, kept separate so the
+    /// UI can say "not included" without calling the scan incomplete.
+    private(set) var expectedUnreadableDirectoryCount = 0
+    /// Subfolders skipped because a volume is scanned from its real path.
+    private(set) var duplicateMirrorDirectoryCount = 0
     private(set) var totalUnavailableEntryCount = 0
     private(set) var cloudOnlyFileCount = 0
 
@@ -99,7 +111,11 @@ final class FileNode: Identifiable, @unchecked Sendable {
         var allocated: Int64 = allocatedSize
         var files = 0
         var dirs = 1 // count self
-        var unscanned = scanIssue == nil ? 0 : 1
+        // Only a node that actually carries an issue counts, matching the
+        // previous semantics for hand-built test trees.
+        var unscanned = scanIssue != nil && scanIssueCountsAsIncomplete ? 1 : 0
+        var expectedUnreadable = scanIssue != nil && !scanIssueCountsAsIncomplete && !scanSkippedAsDuplicate ? 1 : 0
+        var duplicates = scanSkippedAsDuplicate ? 1 : 0
         var unavailable = unavailableEntryCount
         var cloudFiles = 0
 
@@ -110,6 +126,8 @@ final class FileNode: Identifiable, @unchecked Sendable {
             files += child.fileCount
             dirs += child.directoryCount
             unscanned += child.unscannedDirectoryCount
+            expectedUnreadable += child.expectedUnreadableDirectoryCount
+            duplicates += child.duplicateMirrorDirectoryCount
             unavailable += child.totalUnavailableEntryCount
             cloudFiles += child.cloudOnlyFileCount
         }
@@ -119,6 +137,8 @@ final class FileNode: Identifiable, @unchecked Sendable {
         fileCount = files
         directoryCount = dirs
         unscannedDirectoryCount = unscanned
+        expectedUnreadableDirectoryCount = expectedUnreadable
+        duplicateMirrorDirectoryCount = duplicates
         totalUnavailableEntryCount = unavailable
         cloudOnlyFileCount = cloudFiles
     }

@@ -172,7 +172,9 @@ func compareDirectoryEnumerationPerformance() async throws {
     #expect(bytes == root.totalAllocatedSize)
 }
 
-@Test func inaccessibleFoldersAreReportedAsIncomplete() async throws {
+/// A folder whose own mode bits exclude this user is expected to be unreadable;
+/// reporting it would produce a warning no action can clear.
+@Test func ownerOnlyFoldersAreNotReportedAsIncomplete() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
     let folder = fixture.root.appendingPathComponent("restricted")
@@ -182,8 +184,35 @@ func compareDirectoryEnumerationPerformance() async throws {
     defer { chmod(folder.path, 0o700) }
     let (root, _) = try await completedScan(fixture.root.path)
     #expect(root.fileCount == 0)
-    #expect(root.unscannedDirectoryCount == 1)
-    #expect(root.children.first?.scanIssue != nil)
+    #expect(root.unscannedDirectoryCount == 0)
+    // The folder still explains itself in the tree and inspector.
+    let restricted = try #require(root.children.first { $0.name == "restricted" })
+    #expect(restricted.scanIssue != nil)
+    #expect(!restricted.scanIssueCountsAsIncomplete)
+    #expect(restricted.scanIssue?.contains("owner or root") == true)
+}
+
+/// macOS protections deny access with `EPERM` even when the mode bits allow it.
+/// Those are the cases Full Disk Access addresses, so they stay reportable.
+@Test func systemProtectedFoldersRemainReportable() {
+    let block = ScanBlock.forOpenFailure(errno: EPERM, path: "/private/var/db/DumpPanic")
+    #expect(block.kind == .systemProtected)
+    #expect(block.countsAsIncomplete)
+    #expect(block.shortLabel != nil)
+
+    // EACCES on a world-readable folder is a protection layer, not permissions.
+    let disguised = ScanBlock.forOpenFailure(errno: EACCES, path: "/")
+    #expect(disguised.kind == .systemProtected)
+
+    let ownerOnly = ScanBlock.forOpenFailure(errno: EACCES, path: "/usr/sbin/authserver")
+    #expect(ownerOnly.kind == .permissions)
+    #expect(!ownerOnly.countsAsIncomplete)
+}
+
+@Test func cloudOnlyFoldersAreExpectedNotReported() {
+    #expect(!ScanBlock.cloudOnly.countsAsIncomplete)
+    #expect(!ScanBlock.forFailure(errno: EDEADLK).countsAsIncomplete)
+    #expect(ScanBlock.forFailure(errno: EIO).countsAsIncomplete)
 }
 
 @Test func nonexistentAndSymlinkRootsFailInsteadOfCompleting() async throws {
@@ -237,13 +266,16 @@ func compareDirectoryEnumerationPerformance() async throws {
     metadata.st_ino = 3
     let cloudFolder = FileNode(name: "online", metadata: metadata)
     cloudFolder.scanIssue = "Cloud-only folder"
+    cloudFolder.scanIssueCountsAsIncomplete = false
     let root = FileNode(inode: 1, name: "/", isDirectory: true)
     root.unavailableEntryCount = 2
     root.addChild(file)
     root.addChild(cloudFolder)
     root.computeAggregates()
     #expect(root.cloudOnlyFileCount == 1)
-    #expect(root.unscannedDirectoryCount == 1)
+    // Cloud-only folders are expected and no longer counted as incomplete.
+    #expect(root.unscannedDirectoryCount == 0)
+    #expect(root.expectedUnreadableDirectoryCount == 1)
     #expect(root.totalUnavailableEntryCount == 2)
     #expect(file.path == "/cloud.pdf")
 }
