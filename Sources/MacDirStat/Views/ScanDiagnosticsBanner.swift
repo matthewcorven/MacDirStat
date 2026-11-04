@@ -30,13 +30,18 @@ struct ScanDiagnosticsBanner: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(hasIssue ? issueTitle : informationalTitle)
                         .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if let detail {
                         Text(detail)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
                     }
                 }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .help(detail ?? "")
 
                 Spacer(minLength: 8)
 
@@ -57,6 +62,13 @@ struct ScanDiagnosticsBanner: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
+            // The banner must not influence the window's size limits. Intrinsic,
+            // wrapping text here feeds back into AppKit's constraints on the
+            // macOS 26+ SDK and the entire split view grows past the window (the
+            // same trap documented in WelcomeView). Fixed line limits plus a
+            // height bound keep it from proposing a larger ideal size; the full
+            // text stays available as a tooltip and in the inspector.
+            .frame(height: 44, alignment: .leading)
             .background(hasIssue ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08))
         }
     }
