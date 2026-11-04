@@ -4,7 +4,6 @@ import SwiftUI
 /// delete it, a stale-and-clean filter, and a one-click prune for registrations
 /// whose folder is gone.
 struct WorktreeInspectorView: View {
-    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
     @Bindable var state: AppState
 

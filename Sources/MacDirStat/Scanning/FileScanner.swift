@@ -152,6 +152,7 @@ private final class ScanState: Sendable {
 private struct DirectoryJob: Sendable {
     let path: String
     let node: FileNode
+    var skipsWorktreeMarking = false
 }
 
 private struct DirectoryResult: Sendable {
@@ -228,11 +229,11 @@ private func performScan(
             }
         }
         try Task.checkCancellation()
-        // All directory jobs have completed and their children are attached, so
-        // worktree detection can run without touching the tree concurrently.
+        // Worktree roots were marked while each directory was open, so there is
+        // no second tree walk here; the summary is already in hand.
         if detectWorktrees {
-            let worktrees = GitWorktreeDetector.markWorktrees(in: root)
-            AppLog.worktree.notice("Detected \(worktrees.count) git worktree(s): \(worktrees.map(\.path).joined(separator: ", "))")
+            let worktrees = GitWorktreeDetector.worktreeRoots(in: root)
+            AppLog.scan.notice("Detected \(worktrees.count) worktrees during the scan: \(worktrees.map(\.path).joined(separator: ", "))")
         }
         root.computeAggregates()
         root.sortChildrenBySize(metric: .allocatedSize)
@@ -299,7 +300,7 @@ private func scanDirectory(
             // A `.git` file means this folder may be a linked worktree. Checking
             // it here costs one small read while the directory is already open,
             // instead of walking the whole tree again after the scan.
-            if detectWorktrees, name == ".git" {
+            if detectWorktrees, !job.skipsWorktreeMarking, name == ".git" {
                 markWorktreeOwnerIfNeeded(job)
             }
             if child.isDirectory {
@@ -310,6 +311,13 @@ private func scanDirectory(
                 // visible but do not descend into another volume.
                 if state.mounts.isMountPoint(childPath) {
                     AppLog.scan.debug("Not descending into mounted volume: \(childPath)")
+                } else if detectWorktrees,
+                          job.skipsWorktreeMarking || WorktreeScanFilter.shouldSkip(name) {
+                    // Dependencies and build output are large and never where
+                    // the user keeps worktrees, so don't look for `.git` files
+                    // under them. Sizes are still measured exactly.
+                    result.subdirectories.append(DirectoryJob(
+                        path: childPath, node: child, skipsWorktreeMarking: true))
                 } else {
                     result.subdirectories.append(DirectoryJob(path: childPath, node: child))
                 }

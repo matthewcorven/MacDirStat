@@ -205,8 +205,10 @@ enum WorktreeAnalyzer {
         // Depth is bounded because post-scan collection runs on the UI's tree;
         // a scan already marks worktrees it reached, so this only adds repos that
         // have no visible worktree of their own.
-        if node.depth > 12 { return }
         for child in node.children where child.isDirectory {
+            // The scan doesn't look for worktrees under these, so there is no
+            // repository of interest to find there either.
+            if WorktreeScanFilter.shouldSkip(child.name) { continue }
             collectRepositories(in: child, into: &repositories)
         }
     }
@@ -226,17 +228,15 @@ enum WorktreeAnalyzer {
     }
 }
 
-/// Directories that are large and never contain worktrees. Skipping them is
-/// what keeps post-scan detection from walking `.build` or `node_modules`.
+/// Folders that are large and never hold worktrees. They are still measured
+/// during the scan; only the `.git` check is skipped inside them, which is what
+/// keeps detection cheap on trees full of build output and dependencies.
 enum WorktreeScanFilter {
     static let skippedDirectoryNames: Set<String> = [
         "node_modules", ".build", ".swiftpm", "Library", ".venv", "venv",
         "Pods", "DerivedData", ".git",
     ]
 
-    /// Worktrees can legitimately live anywhere, so only skip a directory when
-    /// it is one of the known noise folders *and* it has no `.git` file of its
-    /// own (a worktree checked out under `Library` must still be reported).
     static func shouldSkip(_ name: String) -> Bool {
         skippedDirectoryNames.contains(name)
     }

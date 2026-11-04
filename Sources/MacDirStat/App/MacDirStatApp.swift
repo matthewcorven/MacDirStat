@@ -3,6 +3,13 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // `MacDirStat --scan <folder>` mirrors dropping a folder on the Dock
+        // icon. Record it before the window is built so the first scan starts
+        // as soon as the window can host it.
+        let arguments = ProcessInfo.processInfo.arguments
+        if let flag = arguments.firstIndex(of: "--scan"), arguments.indices.contains(flag + 1) {
+            AppStateHolder.shared.pendingScanPath = arguments[flag + 1]
+        }
         // Set before the Dock tile appears so it never flashes the generic executable icon.
         if let icon = Self.appIcon() {
             NSApp.applicationIconImage = icon
@@ -19,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let identifier = bundle.bundleIdentifier ?? "no bundle id"
         AppLog.state.notice("Launched MacDirStat \(version) (\(identifier)) pid=\(ProcessInfo.processInfo.processIdentifier) fullDiskAccess=\(FullDiskAccess.isGranted) bundle=\(bundle.bundlePath)")
+
     }
 
     // Same lookup as SPM's Bundle.module, which calls fatalError when the resource bundle
@@ -34,12 +42,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
+
+    /// Lets Finder's Open With and a folder dropped on the Dock icon scan it.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let folder = urls.first(where: { url in
+            (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+        }) else { return }
+        Task { @MainActor in
+            AppStateHolder.shared.pendingScanPath = folder.path(percentEncoded: false)
+            AppStateHolder.shared.startPendingScan()
+        }
+    }
+}
+
+/// A single `AppState` per process, so the app delegate and the SwiftUI scene
+/// agree on where an opened folder should be scanned.
+@MainActor
+enum AppStateHolder {
+    static let shared = AppState()
+
+    static func startPendingScanIfNeeded(with requester: @escaping (String) -> Void) {
+        shared.scanRequester = requester
+        shared.startPendingScan()
+    }
 }
 
 @main
 struct MacDirStatApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
-    @State private var appState = AppState()
+    @State private var appState = AppStateHolder.shared
 
     var body: some Scene {
         WindowGroup {

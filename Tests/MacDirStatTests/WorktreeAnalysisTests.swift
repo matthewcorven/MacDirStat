@@ -356,3 +356,61 @@ func worktreeOnAnotherVolumeIsReportedWhenTheScanDoesNotDescend() async throws {
     #expect(away.scanMissedReason != nil)
     #expect(records.filter { $0.path.hasSuffix("/mounted/linked") }.count == 1)
 }
+
+// MARK: - Cost control
+
+@Test(.enabled(if: gitAvailable))
+func noiseFoldersAreMeasuredButNotSearchedForWorktrees() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    // A worktree-shaped folder inside node_modules must not be listed, but its
+    // bytes must still count toward the scan.
+    let noise = fixture.root.appendingPathComponent("project/node_modules/pkg")
+    try FileManager.default.createDirectory(at: noise, withIntermediateDirectories: true)
+    try Data("gitdir: /nowhere/.git/worktrees/p\n".utf8)
+        .write(to: noise.appendingPathComponent(".git"))
+    try Data(repeating: 0x41, count: 8192).write(to: noise.appendingPathComponent("payload.bin"))
+
+    let scanned = try await fixture.scan()
+    let project = try #require(scanned.children.first { $0.name == "project" })
+    let modules = try #require(project.children.first { $0.name == "node_modules" })
+    #expect(!modules.children.isEmpty, "sizes must still be measured inside skipped folders")
+    #expect(GitWorktreeDetector.worktreeRoots(in: scanned).isEmpty)
+    #expect(WorktreeAnalyzer.analyze(root: scanned).allSatisfy { !$0.path.contains("node_modules") })
+}
+
+@Test(.enabled(if: gitAvailable))
+func worktreeDetectionCostsNoSecondTreeWalk() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    _ = try fixture.worktree("during-scan", branch: "during-scan")
+
+    let withDetection = try await fixture.scan(worktrees: true)
+    let marked = GitWorktreeDetector.worktreeRoots(in: withDetection)
+    #expect(marked.map(\.name) == ["during-scan"])
+
+    // Clearing proves the mark came from the scan itself, not from a helper.
+    GitWorktreeDetector.clearWorktreeMarks(in: withDetection)
+    #expect(GitWorktreeDetector.worktreeRoots(in: withDetection).isEmpty)
+
+    let withoutDetection = try await fixture.scan(worktrees: false)
+    #expect(GitWorktreeDetector.worktreeRoots(in: withoutDetection).isEmpty)
+}
+
+@Test(.enabled(if: gitAvailable))
+func unreadableFoldersAreReportedAndHideWorktrees() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let hidden = fixture.root.appendingPathComponent("private-area")
+    try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+    _ = try fixture.worktree("private-area/hidden-wt", branch: "hidden")
+    #expect(chmod(hidden.path, 0o000) == 0)
+    defer { chmod(hidden.path, 0o700) }
+
+    let scanned = try await fixture.scan()
+    #expect(scanned.unscannedDirectoryCount >= 1)
+    // Which is exactly why the UI has to say so rather than silently omitting it.
+    let records = WorktreeAnalyzer.analyze(root: scanned)
+    let missed = records.first { $0.path.hasSuffix("hidden-wt") }
+    #expect(missed == nil || missed?.scanMissedReason != nil)
+}

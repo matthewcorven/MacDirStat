@@ -194,6 +194,9 @@ struct ContentView: View {
             if coordinator == nil {
                 coordinator = ScanCoordinator(appState: appState)
             }
+            AppStateHolder.startPendingScanIfNeeded { path in
+                coordinator?.startScan(path: path, detectGitWorktrees: appState.detectGitWorktrees)
+            }
         }
         .onChange(of: appState.detectGitWorktrees) {
             // Start or stop watching for worktrees deleted outside the app.

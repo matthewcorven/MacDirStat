@@ -74,6 +74,11 @@ final class AppState {
     var scanUnreadableFolderCount: Int = 0
     var scanHadFullDiskAccess: Bool = FullDiskAccess.isGranted
     private var analysisTask: Task<Void, Never>?
+    /// Set by the app delegate when a folder is opened from Finder before the
+    /// main window exists.
+    var pendingScanPath: String?
+    /// Set once the main window is on screen; starts a requested scan.
+    var scanRequester: ((String) -> Void)?
 
     static let worktreeDefaultsKey = "detectGitWorktrees"
 
@@ -233,6 +238,13 @@ final class AppState {
             let rhsRank = rhs.isPrunable ? 0 : (rhs.isUnusedCandidate(staleThreshold: threshold) ? 1 : 2)
             return lhsRank == rhsRank ? lhs.path < rhs.path : lhsRank < rhsRank
         }
+    }
+
+    /// Starts a scan requested by Finder once the window can host it.
+    func startPendingScan() {
+        guard let path = pendingScanPath, let scanRequester else { return }
+        pendingScanPath = nil
+        scanRequester(path)
     }
 
     /// Waits for the background git cross-check so callers (and tests) observe
