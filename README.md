@@ -64,6 +64,9 @@ MacDirStat only deletes files through an explicit **Move Worktree to Trash** / *
 - **Cloud-aware scanning.** File Provider placeholders (including OneDrive, synced SharePoint libraries, iCloud Drive, and other providers using macOS dataless files) are measured without downloading their contents. Cloud-only folders are skipped and marked as incomplete.
 - **Drive overview.** The start screen shows your mounted drives with their used and available space, or you can scan any folder.
 - **Git worktree awareness.** Turn on the **Git Worktrees** option before (or after) scanning to color linked git worktrees consistently and show a legend with how many worktrees the scan contains and how much space they use. The total updates immediately when a worktree is moved to the Trash from MacDirStat, or when one is deleted outside the app.
+- **Which worktrees are safe to delete.** The **Worktree Report** lists every worktree with its branch, whether it has uncommitted changes, when a file last changed, and its size. The **Stale & Clean** filter narrows the list to the ones you can usually delete, and deleting is refused while a worktree has uncommitted changes. Detached worktrees are always listed as candidates.
+- **Cross-checked with git.** After the scan, `git worktree list --porcelain` runs for each repository found. That adds real branch names, reports **prunable** registrations whose folder is gone (with a one-click **Prune**), flags a `.git` file that points at a moved or missing gitdir, and marks a worktree as **orphaned** when its main repository is gone. Without git installed, the filesystem view is shown on its own.
+- **Honest about gaps.** Folders the scan could not read are counted in the main window, together with the Full Disk Access state, because worktrees inside them would otherwise be invisible.
 - **Reveal in Finder and Copy Path** from the inspector or the right-click menu.
 - **Parallel scanning with live progress.** MacDirStat reads file metadata in batches and scans folders in parallel, with a POSIX fallback for unsupported filesystems. Hard-linked files are counted once.
 - **Native and lightweight.** Built with SwiftUI, with no external dependencies, no Electron, and no bundled runtimes.
@@ -147,7 +150,9 @@ Colors show file type, based on the file extension. Rectangles get slightly dark
 | Brown | Caches | CACHE, TMP, O, PYC, CLASS |
 | Gray | Other | Everything else, including files without an extension |
 
-When the **Git Worktrees** option is on, folders that are roots of linked git worktrees are drawn in cyan (`#1AD6EB`) instead of their file-type colors, and a **Git Worktrees** legend with their count and combined size stays in the corner of the treemap. The main repository, its submodules, and ordinary folders keep their normal colors.
+When the **Git Worktrees** option is on, folders that are roots of linked git worktrees are drawn in cyan (`#1AD6EB`) instead of their file-type colors, and a **Git Worktrees** legend with their count and combined size stays in the corner of the treemap. The legend also shows how many are unused and how many are prunable; click it to open the **Worktree Report**. The main repository, its submodules, and ordinary folders keep their normal colors.
+
+Worktrees are recognized while a folder is being scanned, not in a second pass, so detection adds no extra tree walk. The `.git` check is skipped inside `node_modules`, `.build`, `.swiftpm`, `Library`, `Pods`, `DerivedData` and virtualenv folders, which are large and never hold worktrees; their sizes are still measured exactly.
 
 ### Can MacDirStat scan external drives?
 
@@ -204,15 +209,17 @@ Sources/MacDirStat/
 ├── App/              # Entry point, AppState
 ├── Scanning/         # FileScanner (parallel POSIX traversal), ScanCoordinator, FileNode tree model
 ├── Categorization/   # FileCategory definitions, ~190 file extension mappings
-├── Worktrees/        # Git worktree detection and shared worktree color/legend constants
+├── Worktrees/        # Worktree detection, git cross-check/analysis, shared color constants
 ├── Treemap/          # Squarify layout engine, hit testing, Canvas renderer, zoom and pan
-├── Views/            # ContentView, WelcomeView, ScanProgressView, DirectoryTreeView, DetailPanelView, WorktreeSummaryView
-└── Utilities/        # ByteFormatter, FullDiskAccess, FolderPicker, AppLog (unified logging)
+├── Views/            # ContentView, WelcomeView, Settings, Worktree Report, diagnostics banners
+└── Utilities/        # ByteFormatter, FilePath, FullDiskAccess, FolderPicker, AppLog (unified logging)
 ```
 
 ### Diagnostics logging
 
-MacDirStat writes structured diagnostics to Apple's unified logging system. Every scan logs its start parameters, the normalized root with device/inode/flags, each folder that failed or changed mid-scan, the final file/folder counts, logical and allocated totals, and cloud/incomplete counts. Layout runs log item counts, canvas size, duration, and the worktree item count, and UI/state events log navigation and worktree mutations. Folder paths are logged as public so they are readable.
+Logging is **off by default**. Enable it in **MacDirStat › Settings…** (⌘,) under **Diagnostics**. The switch applies immediately, but it does not backfill anything: a session that started with logging off has no record of its own launch or the scans that already ran. When it is on, every scan logs its start parameters, the normalized root with device/inode/flags, each folder that failed or changed mid-scan, the final file/folder counts, logical and allocated totals, and cloud/incomplete counts. Layout runs log item counts, canvas size, duration, and the worktree item count, and UI/state events log navigation and worktree mutations. Folder paths are logged as public so they are readable.
+
+Test runs write to the `io.github.phalladar.MacDirStat.tests` subsystem, so `log show` for the app stays free of fixture paths.
 
 ```bash
 # Live stream while reproducing a problem
@@ -228,6 +235,20 @@ log stream --level debug --predicate 'subsystem == "io.github.phalladar.MacDirSt
 ```
 
 Categories are `scan`, `worktree`, `layout`, `ui`, and `state`. When running from Xcode, messages also appear in the debug console. With `swift run`, prefix the command with `log stream ...` in a second terminal, because the unified log does not echo to stdout.
+
+### Worktree analysis
+
+`WorktreeAnalyzer` combines three sources of truth:
+
+1. **The scan.** Each directory already open for enumeration reads its `.git` file, so worktree roots are known before the tree is published. The newest modification date in the subtree supplies "last changed".
+2. **`git worktree list --porcelain`** for every repository found, giving branch names, `prunable` entries, and registrations the scan could not see.
+3. **`git status --porcelain=v1 --branch`** for each worktree, giving the live branch and whether anything is uncommitted (including untracked files).
+
+A worktree is an **unused candidate** when it is clean and either detached or untouched for longer than the threshold (14 days by default, configurable in **Settings › Git Worktrees**). Delete is refused unless the worktree is clean, or unless you explicitly choose **Delete Immediately**. All git calls are local: prompts are disabled, optional locks are off, and each call has a timeout.
+
+Paths are canonicalized once at the scanner with `realpath`, so a scan started at `/tmp/project` reports `/private/tmp/project`, matching what `git` returns.
+
+A folder can also be scanned from Finder with **Open With › MacDirStat**, by dropping it on the Dock icon, or with `MacDirStat --scan <folder>`.
 
 ## Contributing
 
