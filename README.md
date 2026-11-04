@@ -150,7 +150,7 @@ Colors show file type, based on the file extension. Rectangles get slightly dark
 | Brown | Caches | CACHE, TMP, O, PYC, CLASS |
 | Gray | Other | Everything else, including files without an extension |
 
-When the **Git Worktrees** option is on, folders that are roots of linked git worktrees are drawn in cyan (`#1AD6EB`) instead of their file-type colors, and a **Git Worktrees** legend with their count and combined size stays in the corner of the treemap. The legend also shows how many are unused and how many are prunable; click it to open the **Worktree Report**. The main repository, its submodules, and ordinary folders keep their normal colors.
+When the **Git Worktrees** option is on, a linked git worktree and everything inside it are drawn in cyan (`#1AD6EB`) instead of their file-type colors, so each worktree reads as one solid block sized by its real content. A **Git Worktrees** legend with their count and combined size stays in the corner of the treemap. The legend also shows how many are unused and how many are prunable; click it to open the **Worktree Report**. The main repository, its submodules, and ordinary folders keep their normal colors.
 
 Worktrees are recognized while a folder is being scanned, not in a second pass, so detection adds no extra tree walk. The `.git` check is skipped inside `node_modules`, `.build`, `.swiftpm`, `Library`, `Pods`, `DerivedData` and virtualenv folders, which are large and never hold worktrees; their sizes are still measured exactly.
 

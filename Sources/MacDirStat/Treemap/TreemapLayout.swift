@@ -38,13 +38,19 @@ struct TreemapLayoutEngine: Sendable {
         items.reserveCapacity(8192)
         var nextID = 0
         layoutNode(root, in: bounds, depth: 0, sizeMetric: sizeMetric,
-                   highlightWorktrees: highlightWorktrees, items: &items, nextID: &nextID)
+                   highlightWorktrees: highlightWorktrees, insideWorktree: false,
+                   items: &items, nextID: &nextID)
         return items
     }
 
-    private func colorForNode(_ node: FileNode, depth: Int, highlightWorktrees: Bool) -> CGColor {
+    /// `insideWorktree` is true for everything below a worktree root, so the
+    /// whole worktree is one solid block instead of a few-pixel root cell with
+    /// its contents in ordinary file-type colors.
+    private func colorForNode(_ node: FileNode, depth: Int, highlightWorktrees: Bool,
+                              insideWorktree: Bool) -> CGColor {
         let darkenFactor = max(0.5, 1.0 - Double(depth) * 0.08)
-        let baseColor = (highlightWorktrees && node.isGitWorktree
+        let isWorktree = node.isGitWorktree || insideWorktree
+        let baseColor = (highlightWorktrees && isWorktree
                          ? GitWorktreeStyle.color
                          : node.category.color).resolve(in: .init())
         return CGColor(
@@ -61,10 +67,13 @@ struct TreemapLayoutEngine: Sendable {
         depth: Int,
         sizeMetric: SizeMetric,
         highlightWorktrees: Bool,
+        insideWorktree: Bool,
         items: inout [TreemapItem],
         nextID: inout Int
     ) {
         guard bounds.area >= minPixelArea else { return }
+        // Worktrees are shaded as a unit, so descendants inherit the tint.
+        let inWorktree = insideWorktree || node.isGitWorktree
 
         // Leaf node (file or empty/childless directory)
         if !node.isDirectory || node.children.isEmpty || depth >= maxDepth {
@@ -74,7 +83,8 @@ struct TreemapLayoutEngine: Sendable {
                 node: node,
                 rect: bounds,
                 depth: depth,
-                color: colorForNode(node, depth: depth, highlightWorktrees: highlightWorktrees)
+                color: colorForNode(node, depth: depth, highlightWorktrees: highlightWorktrees,
+                                    insideWorktree: insideWorktree)
             ))
             return
         }
@@ -89,7 +99,8 @@ struct TreemapLayoutEngine: Sendable {
                 node: node,
                 rect: bounds,
                 depth: depth,
-                color: colorForNode(node, depth: depth, highlightWorktrees: highlightWorktrees)
+                color: colorForNode(node, depth: depth, highlightWorktrees: highlightWorktrees,
+                                    insideWorktree: insideWorktree)
             ))
             return
         }
@@ -101,7 +112,8 @@ struct TreemapLayoutEngine: Sendable {
             node: node,
             rect: bounds,
             depth: depth,
-            color: colorForNode(node, depth: depth, highlightWorktrees: highlightWorktrees)
+            color: colorForNode(node, depth: depth, highlightWorktrees: highlightWorktrees,
+                                insideWorktree: insideWorktree)
         ))
 
         let totalSize = Double(children.reduce(0) { $0 + $1.size(for: sizeMetric) })
@@ -114,7 +126,8 @@ struct TreemapLayoutEngine: Sendable {
 
         for (i, child) in children.enumerated() where i < rects.count {
             layoutNode(child, in: rects[i], depth: depth + 1, sizeMetric: sizeMetric,
-                       highlightWorktrees: highlightWorktrees, items: &items, nextID: &nextID)
+                       highlightWorktrees: highlightWorktrees, insideWorktree: inWorktree,
+                       items: &items, nextID: &nextID)
         }
     }
 

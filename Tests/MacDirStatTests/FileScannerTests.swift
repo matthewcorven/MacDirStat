@@ -535,5 +535,12 @@ func sealedSystemVolumeFilesAreNotDropped() async throws {
 @Test func scannerUsesLiveMountTableByDefault() {
     let scanner = FileScanner(rootPath: "/")
     #expect(scanner.mounts == nil)
-    #expect(MountTable().count > 0)
+    // `MNT_NOWAIT` reads the cached table, which can be momentarily empty while
+    // another process mounts or unmounts a volume.
+    var count = 0
+    for _ in 0..<10 where count == 0 {
+        count = MountTable().count
+        if count == 0 { usleep(20_000) }
+    }
+    #expect(count > 0)
 }
