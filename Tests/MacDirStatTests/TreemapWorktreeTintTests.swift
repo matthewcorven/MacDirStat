@@ -135,3 +135,37 @@ private func isDescendant(_ node: FileNode, of ancestor: FileNode) -> Bool {
     #expect(root.categoryBreakdown().contains { $0.category == .documents })
     #expect(root.categoryBreakdown(metric: .fileSize).contains { $0.category == .video })
 }
+
+/// The inspector's Category Breakdown should account for worktrees as their own
+/// row, and the rows must still add up to the folder's total.
+@Test func categoryBreakdownReportsWorktreesAsTheirOwnCategory() {
+    let root = FileNode(inode: 1, name: "/scan", isDirectory: true)
+    let tree = FileNode(inode: 2, name: "feature-wt", isDirectory: true, allocatedSize: 4096)
+    let inside = FileNode(inode: 3, name: "main.swift", isDirectory: false,
+                          ownSize: 900_000, allocatedSize: 1_000_000, category: .code)
+    let outside = FileNode(inode: 4, name: "notes.txt", isDirectory: false,
+                           ownSize: 400_000, allocatedSize: 500_000, category: .documents)
+    tree.addChild(inside)
+    root.addChild(tree)
+    root.addChild(outside)
+    root.computeAggregates()
+    tree.isGitWorktree = true
+    root.computeAggregates()
+
+    let breakdown = root.categoryBreakdown()
+    #expect(breakdown.first?.category == .gitWorktrees)
+    #expect(breakdown.first?.size == tree.totalAllocatedSize)
+    // The worktree's files moved out of Code and into the worktree row.
+    #expect(breakdown.contains { $0.category == .code } == false)
+    #expect(breakdown.contains { $0.category == .documents && $0.size == 500_000 })
+
+    // Nothing is double-counted.
+    #expect(breakdown.reduce(0) { $0 + $1.size } == root.totalAllocatedSize)
+
+    // Selecting the worktree itself reads as 100% worktree.
+    #expect(tree.categoryBreakdown().map(\.category) == [.gitWorktrees])
+    #expect(tree.categoryBreakdown().first?.size == tree.totalAllocatedSize)
+
+    // Logical sizes follow the same rule.
+    #expect(root.categoryBreakdown(metric: .fileSize).first?.category == .gitWorktrees)
+}

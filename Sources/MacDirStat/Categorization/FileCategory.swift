@@ -10,6 +10,10 @@ enum FileCategory: String, CaseIterable, Sendable, Identifiable {
     case applications
     case system
     case caches
+    /// Not a file type: a linked git worktree. Its files normally report their
+    /// own categories, but the breakdown groups a worktree's whole subtree here
+    /// so the inspector can answer "how much of this folder is worktrees?".
+    case gitWorktrees
     case other
 
     var id: String { rawValue }
@@ -25,6 +29,7 @@ enum FileCategory: String, CaseIterable, Sendable, Identifiable {
         case .applications: "Applications"
         case .system: "System"
         case .caches: "Caches"
+        case .gitWorktrees: GitWorktreeStyle.legendTitle
         case .other: "Other"
         }
     }
@@ -40,6 +45,7 @@ enum FileCategory: String, CaseIterable, Sendable, Identifiable {
         case .applications: Color(red: 0.95, green: 0.50, blue: 0.70)
         case .system: Color(red: 0.60, green: 0.60, blue: 0.65)
         case .caches: Color(red: 0.75, green: 0.55, blue: 0.40)
+        case .gitWorktrees: GitWorktreeStyle.color
         case .other: Color(red: 0.50, green: 0.50, blue: 0.55)
         }
     }
@@ -55,6 +61,7 @@ enum FileCategory: String, CaseIterable, Sendable, Identifiable {
         case .applications: "app.fill"
         case .system: "gearshape.fill"
         case .caches: "cylinder.fill"
+        case .gitWorktrees: GitWorktreeStyle.sfSymbol
         case .other: "questionmark.folder.fill"
         }
     }

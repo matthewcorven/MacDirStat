@@ -150,6 +150,7 @@ Colors show file type, based on the file extension. Rectangles get slightly dark
 | Pink | Applications | DYLIB, SO, DLL, EXE, APK |
 | Light gray | System | PLIST, STRINGS, .DS_Store |
 | Brown | Caches | CACHE, TMP, O, PYC, CLASS |
+| Cyan | Git Worktrees | A linked git worktree, counted as one block rather than by file type |
 | Gray | Other | Everything else, including files without an extension |
 
 When the **Git Worktrees** option is on, a linked git worktree and everything inside it are drawn in cyan (`#1AD6EB`) instead of their file-type colors, so each worktree reads as one solid block sized by its real content. A **Git Worktrees** legend with their count and combined size stays in the corner of the treemap. The legend also shows how many are unused and how many are prunable; click it to open the **Worktree Report**. The main repository, its submodules, and ordinary folders keep their normal colors.

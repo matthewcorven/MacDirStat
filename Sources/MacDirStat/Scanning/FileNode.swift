@@ -142,11 +142,18 @@ final class FileNode: Identifiable, @unchecked Sendable {
             duplicates += child.duplicateMirrorDirectoryCount
             unavailable += child.totalUnavailableEntryCount
             cloudFiles += child.cloudOnlyFileCount
-            for (category, size) in child.categorySizes {
-                allocatedByCategory[category, default: 0] += size
-            }
-            for (category, size) in child.categorySizesByFileSize {
-                logicalByCategory[category, default: 0] += size
+            if child.isGitWorktree {
+                // A worktree counts as one block rather than as its file types,
+                // so the inspector can report how much of a folder is worktrees.
+                allocatedByCategory[.gitWorktrees, default: 0] += child.totalAllocatedSize
+                logicalByCategory[.gitWorktrees, default: 0] += child.totalSize
+            } else {
+                for (category, size) in child.categorySizes {
+                    allocatedByCategory[category, default: 0] += size
+                }
+                for (category, size) in child.categorySizesByFileSize {
+                    logicalByCategory[category, default: 0] += size
+                }
             }
         }
 
@@ -159,6 +166,11 @@ final class FileNode: Identifiable, @unchecked Sendable {
         duplicateMirrorDirectoryCount = duplicates
         totalUnavailableEntryCount = unavailable
         cloudOnlyFileCount = cloudFiles
+        if isGitWorktree {
+            // Selecting a worktree should read as 100% worktree.
+            allocatedByCategory = [.gitWorktrees: allocated]
+            logicalByCategory = [.gitWorktrees: size]
+        }
         categorySizes = allocatedByCategory
         categorySizesByFileSize = logicalByCategory
     }
