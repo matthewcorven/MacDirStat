@@ -7,6 +7,28 @@ struct TreemapRect: Sendable {
     var height: Double
 
     var area: Double { width * height }
+
+    /// Grows the rect about its center so both sides are at least `minSide`,
+    /// clamped to stay inside `container`.
+    func atLeastVisible(minSide: Double, inside container: TreemapRect) -> TreemapRect {
+        guard width < minSide || height < minSide else { return self }
+        var result = self
+        let newWidth = max(width, minSide)
+        let newHeight = max(height, minSide)
+        result.x = centerX - newWidth / 2
+        result.y = centerY - newHeight / 2
+        result.width = newWidth
+        result.height = newHeight
+        // Keep it inside the parent so it never paints over a sibling.
+        result.x = min(max(result.x, container.x), container.maxX - newWidth)
+        result.y = min(max(result.y, container.y), container.maxY - newHeight)
+        return result
+    }
+
+    var centerX: Double { x + width / 2 }
+    var centerY: Double { y + height / 2 }
+    var maxX: Double { x + width }
+    var maxY: Double { y + height }
     var minSide: Double { min(width, height) }
 
     func contains(point: CGPoint) -> Bool {
@@ -26,6 +48,9 @@ struct TreemapItem: Identifiable, Sendable {
 struct TreemapLayoutEngine: Sendable {
     let maxDepth: Int
     let minPixelArea: Double
+
+    /// Smallest edge, in points, a worktree block keeps so it stays visible.
+    static let minimumWorktreeSide: Double = 4
 
     init(maxDepth: Int = 12, minPixelArea: Double = 4) {
         self.maxDepth = maxDepth
@@ -71,7 +96,11 @@ struct TreemapLayoutEngine: Sendable {
         items: inout [TreemapItem],
         nextID: inout Int
     ) {
-        guard bounds.area >= minPixelArea else { return }
+        // Cull sub-pixel rectangles to keep item counts sane, but never drop a
+        // worktree root: at full-disk scale a 5 MB worktree is under 4 px2, so
+        // ordinary culling made real worktrees disappear from the treemap while
+        // the legend still counted them.
+        guard bounds.area >= minPixelArea || (highlightWorktrees && node.isGitWorktree) else { return }
         // Worktrees are shaded as a unit, so descendants inherit the tint.
         let inWorktree = insideWorktree || node.isGitWorktree
 
@@ -125,7 +154,16 @@ struct TreemapLayoutEngine: Sendable {
         let rects = squarify(sizes: sizes, in: bounds)
 
         for (i, child) in children.enumerated() where i < rects.count {
-            layoutNode(child, in: rects[i], depth: depth + 1, sizeMetric: sizeMetric,
+            var rect = rects[i]
+            if highlightWorktrees, child.isGitWorktree {
+                // Sizing by bytes alone can leave a worktree a fraction of a
+                // pixel wide, which is indistinguishable from no worktree at
+                // all. Give it a small visible footprint inside its own slot.
+                // Clamp to the parent so an enlarged block can't paint over an
+                // unrelated sibling's area.
+                rect = rect.atLeastVisible(minSide: Self.minimumWorktreeSide, inside: bounds)
+            }
+            layoutNode(child, in: rect, depth: depth + 1, sizeMetric: sizeMetric,
                        highlightWorktrees: highlightWorktrees, insideWorktree: inWorktree,
                        items: &items, nextID: &nextID)
         }

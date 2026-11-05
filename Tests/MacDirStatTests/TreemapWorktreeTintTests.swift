@@ -169,3 +169,57 @@ private func isDescendant(_ node: FileNode, of ancestor: FileNode) -> Bool {
     // Logical sizes follow the same rule.
     #expect(root.categoryBreakdown(metric: .fileSize).first?.category == .gitWorktrees)
 }
+
+/// On a full-disk scan a 5 MB worktree is under 4 px2, so the ordinary
+/// sub-pixel cull dropped it entirely: 17 worktrees were detected and reported
+/// in the legend, but only 11 produced a treemap item.
+@Test func tinyWorktreesAreNeverCulled() {
+    let root = FileNode(inode: 1, name: "/scan", isDirectory: true)
+    // A 2 TB sibling makes the worktree's share vanishingly small.
+    let huge = FileNode(inode: 2, name: "huge.img", isDirectory: false,
+                        allocatedSize: 2_000_000_000_000, category: .other)
+    let worktree = FileNode(inode: 3, name: "tiny-wt", isDirectory: true, allocatedSize: 4096)
+    let buried = FileNode(inode: 4, name: "payload.bin", isDirectory: false,
+                          allocatedSize: 5_000_000, category: .code)
+    worktree.addChild(buried)
+    root.addChild(huge)
+    root.addChild(worktree)
+    root.computeAggregates()
+    worktree.isGitWorktree = true
+
+    let items = TreemapLayoutEngine().layout(
+        root: root,
+        in: TreemapRect(x: 0, y: 0, width: 930, height: 660),
+        sizeMetric: .allocatedSize,
+        highlightWorktrees: true)
+
+    let placed = items.first { $0.node === worktree }
+    #expect(placed != nil, "a worktree root must always produce an item")
+    if let placed {
+        // And it must be big enough to actually see.
+        #expect(placed.rect.width >= TreemapLayoutEngine.minimumWorktreeSide)
+        #expect(placed.rect.height >= TreemapLayoutEngine.minimumWorktreeSide)
+    }
+    // Its contents still inherit the tint.
+    #expect(items.contains { $0.node === buried && isWorktreeColor($0.color) })
+}
+
+/// Highlighting off must not change the culling rules for anything else.
+@Test func normalCullingStillAppliesWhenWorktreesAreOff() {
+    let root = FileNode(inode: 1, name: "/scan", isDirectory: true)
+    root.addChild(FileNode(inode: 2, name: "huge.img", isDirectory: false,
+                           allocatedSize: 2_000_000_000_000, category: .other))
+    let worktree = FileNode(inode: 3, name: "tiny-wt", isDirectory: true, allocatedSize: 4096)
+    worktree.addChild(FileNode(inode: 4, name: "payload.bin", isDirectory: false,
+                               allocatedSize: 5_000_000, category: .code))
+    root.addChild(worktree)
+    root.computeAggregates()
+    worktree.isGitWorktree = true
+
+    let items = TreemapLayoutEngine().layout(
+        root: root,
+        in: TreemapRect(x: 0, y: 0, width: 930, height: 660),
+        sizeMetric: .allocatedSize,
+        highlightWorktrees: false)
+    #expect(items.contains { $0.node === worktree } == false)
+}
