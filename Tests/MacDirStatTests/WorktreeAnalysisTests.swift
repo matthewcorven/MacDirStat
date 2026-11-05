@@ -677,3 +677,33 @@ func prunableEntriesArePrunedRatherThanTrashed() async throws {
     let remaining = try WorktreeAnalyzer.listWorktrees(in: fixture.mainRepo.path, runner: runner)
     #expect(!remaining.contains { $0.isPrunable })
 }
+
+/// "N worktrees" and "M prunable" count different things: prunable entries are
+/// registrations whose folder is already gone, so they must not be visually
+/// grouped as a subset of the worktree count.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func prunableEntriesAreCountedSeparatelyFromWorktreesOnDisk() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    _ = try fixture.worktree("live-wt", branch: "live-wt")
+    let gone = try fixture.worktree("gone-wt", branch: "gone-wt")
+    try FileManager.default.removeItem(at: gone)
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let onDisk = appState.worktreeRecords.filter { !$0.isPrunable }
+    let prunable = appState.worktreeRecords.filter(\.isPrunable)
+
+    #expect(onDisk.count == 1, "only the live worktree exists on disk")
+    #expect(prunable.count == 1)
+    // The badge's headline count covers measured worktrees, not registrations.
+    #expect(appState.worktreeCount == onDisk.count)
+    #expect(appState.prunableWorktreeCount == prunable.count)
+    // And the two sets are disjoint.
+    #expect(Set(onDisk.map(\.path)).isDisjoint(with: Set(prunable.map(\.path))))
+}

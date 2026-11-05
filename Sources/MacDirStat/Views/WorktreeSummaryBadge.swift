@@ -44,12 +44,24 @@ struct WorktreeSummaryBadge: View {
         .help("Show each worktree's branch, uncommitted changes, last change and size")
     }
 
+    /// The three numbers measure different things: `count` is worktrees that
+    /// exist on disk and were measured, while `prunableCount` is broken git
+    /// registrations whose folder is already gone. Listing them side by side
+    /// read as "3 worktrees, 11 of which are prunable", so the label says which
+    /// is which.
     private var detail: String {
-        if count == 0 { return "None detected" }
-        var parts = ["\(count.formatted()) worktree\(count == 1 ? "" : "s")",
-                     ByteFormatter.string(from: totalSize)]
-        if unusedCount > 0 { parts.append("\(unusedCount) unused") }
-        if prunableCount > 0 { parts.append("\(prunableCount) prunable") }
+        if count == 0 && prunableCount == 0 { return "None detected" }
+        var parts: [String] = []
+        if count > 0 {
+            parts.append("\(count.formatted()) on disk")
+            parts.append(ByteFormatter.string(from: totalSize))
+            if unusedCount > 0 { parts.append("\(unusedCount) unused") }
+        } else {
+            parts.append("None on disk")
+        }
+        if prunableCount > 0 {
+            parts.append("\(prunableCount) missing")
+        }
         return parts.joined(separator: " · ")
     }
 }

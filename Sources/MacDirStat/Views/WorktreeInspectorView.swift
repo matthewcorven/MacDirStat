@@ -257,13 +257,17 @@ struct WorktreeInspectorView: View {
         .padding(16)
     }
 
+    /// Prunable registrations are distinct from worktrees on disk: they are
+    /// git's bookkeeping for folders that are already gone, so they are counted
+    /// separately rather than lumped into the total.
     private var summary: String {
-        let dirty = state.worktreeRecords.filter { $0.isClean == false }.count
+        let onDisk = state.worktreeRecords.filter { !$0.isPrunable }
+        let dirty = onDisk.filter { $0.isClean == false }.count
         let prunable = state.prunableWorktreeCount
-        var parts = ["\(state.worktreeRecords.count.formatted()) total",
+        var parts = ["\(onDisk.count.formatted()) on disk",
                      "\(state.unusedWorktreeCount) unused"]
         if dirty > 0 { parts.append("\(dirty) dirty") }
-        if prunable > 0 { parts.append("\(prunable) prunable") }
+        if prunable > 0 { parts.append("\(prunable) missing (prunable)") }
         return parts.joined(separator: " · ")
     }
 
