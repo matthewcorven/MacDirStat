@@ -645,3 +645,35 @@ func batchImmediateDeleteRemovesEverythingConfirmed() async throws {
     #expect(!FileManager.default.fileExists(atPath: dirty.path))
     #expect(appState.worktreeAlert == nil)
 }
+
+/// Removing a prunable registration must not try to move a nonexistent folder
+/// to the Trash; that reported "The file doesn't exist" to the user.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func prunableEntriesArePrunedRatherThanTrashed() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let gone = try fixture.worktree("gone-wt", branch: "gone-wt")
+    try FileManager.default.removeItem(at: gone)
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let record = try #require(appState.worktreeRecords.first { $0.name == "gone-wt" })
+    #expect(record.isPrunable)
+
+    // The unconfirmed (Trash) path must succeed for a prunable entry too.
+    let result = await appState.deleteWorktrees(paths: [record.path], allowDirty: false)
+    #expect(result.refused.isEmpty, "refusals: \(result.refused)")
+    #expect(result.deleted == 1)
+    #expect(appState.worktreeAlert == nil)
+    #expect(appState.worktreeRecords.contains { $0.name == "gone-wt" } == false)
+
+    // And git no longer lists it.
+    let runner = try #require(GitRunner.shared)
+    let remaining = try WorktreeAnalyzer.listWorktrees(in: fixture.mainRepo.path, runner: runner)
+    #expect(!remaining.contains { $0.isPrunable })
+}

@@ -164,15 +164,31 @@ final class AppState {
     /// already confirmed, and the record itself came from git's own listing.
     @discardableResult
     func deleteWorktreeImmediately(path: String) async -> String? {
-        if worktreeRecords.first(where: { $0.path == path })?.isPrunable == true {
-            if let repo = worktreeRecords.first(where: { $0.path == path })?.mainRepository,
-               let runner = GitRunner.shared, DirectoryProbe.isDirectory(repo) {
-                await Task.detached(priority: .userInitiated) {
-                    _ = try? WorktreeAnalyzer.prune(in: repo, runner: runner)
+        if let record = worktreeRecords.first(where: { $0.path == path }), record.isPrunable {
+            // Nothing on disk: removing the registration is the whole operation,
+            // so a prune failure is worth reporting rather than pretending the
+            // entry is gone.
+            if let repo = record.mainRepository,
+               let runner = GitRunner.shared,
+               DirectoryProbe.isDirectory(repo) {
+                let failure: String? = await Task.detached(priority: .userInitiated) {
+                    do {
+                        let output = try WorktreeAnalyzer.prune(in: repo, runner: runner)
+                        AppLog.worktree.notice("Pruned \(repo): \(output)")
+                        return nil
+                    } catch {
+                        return "\(error)"
+                    }
                 }.value
+                if let failure {
+                    AppLog.worktree.error("Prune failed for \(repo): \(failure)")
+                    return failure
+                }
             }
             worktreeRecords.removeAll { $0.path == path }
             worktreeRevision &+= 1
+            worktreeShrinkRevision &+= 1
+            AppLog.worktree.notice("Removed prunable registration: \(path)")
             return nil
         }
         let failure: String? = await Task.detached(priority: .userInitiated) {
@@ -210,6 +226,17 @@ final class AppState {
         var refused: [String] = []
         for path in paths {
             let name = worktreeRecords.first(where: { $0.path == path })?.name ?? path
+            // A prunable registration has no folder to move to the Trash, so both
+            // paths only drop git's bookkeeping. Without this, trashing reported
+            // "The file doesn't exist" for an entry that was never on disk.
+            if worktreeRecords.first(where: { $0.path == path })?.isPrunable == true {
+                if let failure = await deleteWorktreeImmediately(path: path) {
+                    refused.append("\(name): \(failure)")
+                } else {
+                    deleted += 1
+                }
+                continue
+            }
             if allowDirty {
                 // Confirmed destruction: remove outright, no dirty check.
                 if let failure = await deleteWorktreeImmediately(path: path) {
