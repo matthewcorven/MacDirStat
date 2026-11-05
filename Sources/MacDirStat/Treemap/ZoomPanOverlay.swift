@@ -95,8 +95,18 @@ struct ZoomPanOverlay: NSViewRepresentable {
             }
         }
 
+        /// The event's location in this overlay, or nil when the event belongs to
+        /// another window or falls outside the overlay.
+        ///
+        /// `addLocalMonitorForEvents` is process-wide, so every scroll in the app
+        /// reaches this coordinator. Comparing bounds alone is not enough: a
+        /// scroll in another window can have window coordinates that happen to
+        /// fall inside this view's bounds, which made scrolling the Worktree
+        /// Report zoom the treemap instead.
         private func locationInView(_ event: NSEvent) -> CGPoint? {
-            guard let view = overlayView else { return nil }
+            guard let view = overlayView,
+                  let window = view.window,
+                  event.window === window else { return nil }
             let locInWindow = event.locationInWindow
             // Event monitors always callback on the main thread, safe to access NSView
             return MainActor.assumeIsolated {
@@ -113,7 +123,13 @@ struct ZoomPanOverlay: NSViewRepresentable {
         }
 
         private func handleOtherMouseDragged(_ event: NSEvent) {
-            guard event.buttonNumber == 2, middleMouseDownLocation != nil else { return }
+            // Once a drag starts it bypasses locationInView, so keep the window
+            // check here too or a drag begun in this window would keep panning
+            // even if the pointer moved over another one.
+            guard event.buttonNumber == 2,
+                  middleMouseDownLocation != nil,
+                  let view = overlayView,
+                  event.window === view.window else { return }
             if !didDrag {
                 if let loc = locationInView(event), let start = middleMouseDownLocation {
                     if hypot(loc.x - start.x, loc.y - start.y) > dragThreshold {
