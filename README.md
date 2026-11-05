@@ -98,6 +98,8 @@ MacDirStat works entirely offline: the app contains no networking code, so it ca
 
 Not during a scan. To remove something you find, right-click it, choose **Reveal in Finder**, and move it to the Trash in Finder. Then click **Rescan** to update the treemap. The one exception is a detected git worktree: right-click it and choose **Move Worktree to Trash**, or **Delete Worktree Immediately** to skip the Trash, and the worktree total updates without a rescan.
 
+The report supports the usual macOS selection: click to select, **Shift-click** for a range, **Command-click** to toggle individual rows. With several rows selected the footer offers **Move N to Trash** (clean ones only) and **Delete N Immediately…** (confirmed, includes uncommitted work).
+
 Because a worktree is drawn as one block, right-clicking anywhere inside it offers the worktree actions, and selecting any folder inside it shows the worktree's delete button in the inspector. **Move Worktree to Trash** is refused while the worktree has uncommitted changes, and the reason is shown in an alert. **Delete Worktree Immediately** removes the folder outright instead of moving it to the Trash; because it asks for confirmation first, that confirmation is honoured and uncommitted changes do not block it. The only remaining refusal on that path is when git cannot report the worktree's state at all.
 
 ### Does MacDirStat work on Intel Macs?

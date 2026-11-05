@@ -157,6 +157,100 @@ final class AppState {
         }
     }
 
+    /// Removes a worktree folder outright, whatever its git state. Used by the
+    /// inspector's batch actions, which ask for confirmation before calling.
+    ///
+    /// A worktree that git cannot describe is still removed here: the caller has
+    /// already confirmed, and the record itself came from git's own listing.
+    @discardableResult
+    func deleteWorktreeImmediately(path: String) async -> String? {
+        if worktreeRecords.first(where: { $0.path == path })?.isPrunable == true {
+            if let repo = worktreeRecords.first(where: { $0.path == path })?.mainRepository,
+               let runner = GitRunner.shared, DirectoryProbe.isDirectory(repo) {
+                await Task.detached(priority: .userInitiated) {
+                    _ = try? WorktreeAnalyzer.prune(in: repo, runner: runner)
+                }.value
+            }
+            worktreeRecords.removeAll { $0.path == path }
+            worktreeRevision &+= 1
+            return nil
+        }
+        let failure: String? = await Task.detached(priority: .userInitiated) {
+            do {
+                try FileManager.default.removeItem(at: URL(fileURLWithPath: path))
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }.value
+        if let failure {
+            AppLog.worktree.error("Could not delete worktree \(path): \(failure)")
+            return failure
+        }
+        if let node = worktreeNode(for: path) {
+            removeFromTree(node)
+        } else {
+            worktreeRecords.removeAll { $0.path == path }
+        }
+        worktreeRevision &+= 1
+        worktreeShrinkRevision &+= 1
+        AppLog.worktree.notice("Deleted worktree after confirmation: \(path)")
+        return nil
+    }
+
+    /// Deletes several worktrees, one at a time so a failure on one doesn't
+    /// abandon the rest. Prunable registrations are pruned rather than removed
+    /// from disk. Returns how many folders were removed and which were refused.
+    ///
+    /// `allowDirty` carries an explicit user confirmation; when false, dirty
+    /// worktrees are refused and reported.
+    @discardableResult
+    func deleteWorktrees(paths: [String], allowDirty: Bool) async -> (deleted: Int, refused: [String]) {
+        var deleted = 0
+        var refused: [String] = []
+        for path in paths {
+            let name = worktreeRecords.first(where: { $0.path == path })?.name ?? path
+            if allowDirty {
+                // Confirmed destruction: remove outright, no dirty check.
+                if let failure = await deleteWorktreeImmediately(path: path) {
+                    refused.append("\(name): \(failure)")
+                } else {
+                    deleted += 1
+                }
+                continue
+            }
+            if let reason = await verifyCleanliness(of: path, allowingDirty: false) {
+                refused.append("\(name): \(reason)")
+                continue
+            }
+            let failure: String? = await Task.detached(priority: .userInitiated) {
+                do {
+                    try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            if let failure {
+                refused.append("\(name): \(failure)")
+                continue
+            }
+            if let node = worktreeNode(for: path) {
+                removeFromTree(node)
+            } else {
+                worktreeRecords.removeAll { $0.path == path }
+            }
+            deleted += 1
+        }
+        worktreeRevision &+= 1
+        worktreeShrinkRevision &+= 1
+        AppLog.worktree.notice("Batch delete: removed=\(deleted) refused=\(refused.count)")
+        if !refused.isEmpty {
+            worktreeAlert = refused.joined(separator: "\n")
+        }
+        return (deleted, refused)
+    }
+
     /// Sizes for the summary sheet, keyed by path so git-only records (prunable
     /// entries the scan never saw) can be shown without a size.
     var worktreeSizesByPath: [String: Int64] {

@@ -587,3 +587,61 @@ func unconfirmedDeleteOfADirtyWorktreeIsStillRefused() async throws {
     #expect(FileManager.default.fileExists(atPath: dirty.path))
     #expect(appState.worktreeAlert?.contains("uncommitted changes") == true)
 }
+
+/// A batch Trash deletes the clean worktrees and leaves the dirty ones alone,
+/// reporting what was skipped.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func batchTrashDeletesCleanAndReportsDirty() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let clean = try fixture.worktree("clean-wt", branch: "clean-wt")
+    let dirty = try fixture.worktree("dirty-wt", branch: "dirty-wt")
+    try Data("uncommitted\n".utf8).write(to: dirty.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let paths = appState.worktreeRecords
+        .filter { $0.name == "clean-wt" || $0.name == "dirty-wt" }
+        .map(\.path)
+    #expect(paths.count == 2)
+
+    let result = await appState.deleteWorktrees(paths: paths, allowDirty: false)
+    #expect(result.deleted == 1)
+    #expect(result.refused.count == 1)
+    #expect(!FileManager.default.fileExists(atPath: clean.path))
+    #expect(FileManager.default.fileExists(atPath: dirty.path))
+    #expect(appState.worktreeRecords.contains { $0.name == "clean-wt" } == false)
+}
+
+/// A confirmed batch delete removes every selected worktree, dirty ones too.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func batchImmediateDeleteRemovesEverythingConfirmed() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let clean = try fixture.worktree("clean-wt", branch: "clean-wt")
+    let dirty = try fixture.worktree("dirty-wt", branch: "dirty-wt")
+    try Data("uncommitted\n".utf8).write(to: dirty.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let paths = appState.worktreeRecords
+        .filter { $0.name == "clean-wt" || $0.name == "dirty-wt" }
+        .map(\.path)
+
+    let result = await appState.deleteWorktrees(paths: paths, allowDirty: true)
+    #expect(result.deleted == 2)
+    #expect(result.refused.isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: clean.path))
+    #expect(!FileManager.default.fileExists(atPath: dirty.path))
+    #expect(appState.worktreeAlert == nil)
+}
