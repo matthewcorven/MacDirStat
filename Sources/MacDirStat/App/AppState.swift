@@ -112,6 +112,10 @@ final class AppState {
     /// Deletes a worktree by path, whether the scan reached it or only git
     /// reported it. Prunable entries have no folder to remove, so they are
     /// dropped from the list and their registration pruned instead.
+    ///
+    /// `skipTrash` means the user confirmed deleting a worktree that still has
+    /// uncommitted changes. That confirmation is honoured; only a state that
+    /// could not be checked at all (git missing or failing) still refuses.
     func deleteWorktree(recordPath path: String, skipTrash: Bool = false) {
         if let node = worktreeNode(for: path) {
             deleteWorktree(node, skipTrash: skipTrash)
@@ -125,7 +129,7 @@ final class AppState {
         }
         Task { [weak self] in
             guard let self else { return }
-            if let reason = await self.verifyCleanliness(of: path) {
+            if let reason = await self.verifyCleanliness(of: path, allowingDirty: skipTrash) {
                 AppLog.worktree.notice("Refused to delete worktree \(path): \(reason)")
                 self.worktreeAlert = reason
                 return
@@ -341,11 +345,16 @@ final class AppState {
 
     /// Re-checks a worktree with git right before deleting it, so a stale or
     /// missing analysis record can't be mistaken for "clean".
-    private func verifyCleanliness(of path: String) async -> String? {
+    ///
+    /// `allowingDirty` reflects an explicit user confirmation. Uncommitted
+    /// changes are then no longer a blocker, but an unverifiable state still is:
+    /// without git there is no way to know what is about to be destroyed.
+    private func verifyCleanliness(of path: String, allowingDirty: Bool = false) async -> String? {
         if let record = worktreeRecords.first(where: { $0.path == path }) {
             if record.isPrunable { return nil }
             if let changes = record.uncommittedChanges {
-                return changes == 0 ? nil : deleteBlockReason(for: path)
+                if changes == 0 || allowingDirty { return nil }
+                return deleteBlockReason(for: path)
             }
         }
         guard let runner = GitRunner.shared, DirectoryProbe.isDirectory(path) else {
@@ -355,7 +364,7 @@ final class AppState {
             guard let snapshot = try? GitStatusReader.snapshot(of: path, runner: runner) else {
                 return "Git could not report the state of this worktree, so it was not deleted."
             }
-            guard !snapshot.isDirty else {
+            guard !snapshot.isDirty || allowingDirty else {
                 return "This worktree has uncommitted changes. Commit, stash or discard them first."
             }
             return nil
@@ -375,7 +384,7 @@ final class AppState {
         // Deleting a large worktree can take a while, so keep the UI responsive
         // and only drop the node once the filesystem operation succeeded.
         Task {
-            if let reason = await verifyCleanliness(of: path) {
+            if let reason = await verifyCleanliness(of: path, allowingDirty: skipTrash) {
                 AppLog.worktree.notice("Refused to delete worktree \(path): \(reason)")
                 self.worktreeAlert = reason
                 return

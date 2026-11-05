@@ -222,10 +222,10 @@ private let gitAvailable = FileManager.default.isExecutableFile(atPath: "/usr/bi
     #expect(record.uncommittedChanges == 1)
     #expect(appState.deleteBlockReason(for: record.path) != nil)
 
-    // The guard must protect the folder even for an immediate (non-Trash) delete
-    // and for a tree path that has no analysed record yet.
+    // Only the un-confirmed path refuses. `skipTrash` means the user explicitly
+    // confirmed deleting uncommitted work, which is covered separately.
     let node = try #require(appState.worktreeNode(for: record.path))
-    appState.deleteWorktree(node, skipTrash: true)
+    appState.deleteWorktree(node)
     try await Task.sleep(for: .milliseconds(300))
     #expect(FileManager.default.fileExists(atPath: dirty.path))
     #expect(appState.worktreeAlert != nil)
@@ -532,4 +532,58 @@ func cleanWorktreeIsDeletedAndDirtyOneIsRefusedWithAReason() async throws {
     var gone = WorktreeRecord(path: fixture.root.appendingPathComponent("gone").path)
     gone.isPrunable = true
     #expect(!gone.canRevealInFinder)
+}
+
+/// Confirming "Delete Immediately" on a dirty worktree must delete it. The
+/// earlier behaviour re-ran the dirty check and refused, overriding the user's
+/// explicit confirmation.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func confirmedImmediateDeleteRemovesADirtyWorktree() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let dirty = try fixture.worktree("dirty-wt", branch: "dirty-wt")
+    try Data("uncommitted\n".utf8).write(to: dirty.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let record = try #require(appState.worktreeRecords.first { $0.name == "dirty-wt" })
+    #expect(record.uncommittedChanges == 1)
+
+    // The un-confirmed path still refuses.
+    appState.deleteWorktree(recordPath: record.path, skipTrash: true)
+    var removed = false
+    for _ in 0..<40 where !removed {
+        try await Task.sleep(for: .milliseconds(100))
+        removed = !FileManager.default.fileExists(atPath: dirty.path)
+    }
+    #expect(removed, "an explicitly confirmed immediate delete must remove the folder")
+    #expect(appState.worktreeAlert == nil, "a confirmed delete must not report a refusal")
+    #expect(appState.worktreeRecords.contains { $0.name == "dirty-wt" } == false)
+}
+
+/// Without confirmation, the same dirty worktree is still refused and survives.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func unconfirmedDeleteOfADirtyWorktreeIsStillRefused() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let dirty = try fixture.worktree("dirty-wt", branch: "dirty-wt")
+    try Data("uncommitted\n".utf8).write(to: dirty.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let record = try #require(appState.worktreeRecords.first { $0.name == "dirty-wt" })
+    appState.deleteWorktree(recordPath: record.path)
+    try await Task.sleep(for: .milliseconds(700))
+    #expect(FileManager.default.fileExists(atPath: dirty.path))
+    #expect(appState.worktreeAlert?.contains("uncommitted changes") == true)
 }

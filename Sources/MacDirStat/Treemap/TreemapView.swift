@@ -21,6 +21,8 @@ struct TreemapView: View {
     @State private var zoomScale: CGFloat = 1.0
     @State private var panOffset: CGPoint = .zero
     @State private var showLabels: Bool = true
+    /// Worktree awaiting an immediate-delete confirmation from the treemap.
+    @State private var pendingImmediateDelete: FileNode?
     @State private var labelDebounce: Task<Void, Never>?
 
     private var hoveredNode: FileNode? {
@@ -103,8 +105,8 @@ struct TreemapView: View {
                         Button("Move Worktree to Trash", role: .destructive) {
                             onDeleteWorktree(worktree, false)
                         }
-                        Button("Delete Worktree Immediately", role: .destructive) {
-                            onDeleteWorktree(worktree, true)
+                        Button("Delete Worktree Immediately…", role: .destructive) {
+                            pendingImmediateDelete = worktree
                         }
                     }
                     if let target = drillDownTarget(for: item.node) {
@@ -151,6 +153,22 @@ struct TreemapView: View {
             .onChange(of: worktreeCount) {
                 recomputeLayout(size: geometry.size)
             }
+        }
+        .confirmationDialog(
+            "Delete “\(pendingImmediateDelete?.name ?? "")” immediately?",
+            isPresented: Binding(
+                get: { pendingImmediateDelete != nil },
+                set: { if !$0 { pendingImmediateDelete = nil } }
+            ),
+            presenting: pendingImmediateDelete
+        ) { worktree in
+            Button("Delete Immediately", role: .destructive) {
+                onDeleteWorktree(worktree, true)
+                pendingImmediateDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingImmediateDelete = nil }
+        } message: { worktree in
+            Text("“\(worktree.name)” is deleted outright and cannot be undone, including any uncommitted changes inside it.")
         }
         .background(.black)
 
