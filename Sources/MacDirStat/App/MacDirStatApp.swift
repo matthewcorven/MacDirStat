@@ -86,6 +86,18 @@ struct MacDirStatApp: App {
         Settings {
             SettingsView()
         }
+
+        // A Window, not a sheet: the worktree list overflows and needs its own
+        // vertical scrollbar plus a size the user can drag.
+        Window("Worktree Report", id: WorktreeReportWindow.id) {
+            WorktreeInspectorWindowContent()
+                .environment(appState)
+        }
+        .defaultSize(width: 780, height: 560)
+        // Resizable by the user, floored at the content's minimum. Without this
+        // SwiftUI can lock a Window scene to its content's ideal size.
+        .windowResizability(.contentMinSize)
+        .keyboardShortcut("w", modifiers: [.command, .shift])
     }
 }
 

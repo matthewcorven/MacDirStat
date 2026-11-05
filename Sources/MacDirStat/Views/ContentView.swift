@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var coordinator: ScanCoordinator?
-    @State private var showingWorktrees = false
+    @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.zoomInAction) private var zoomIn
     @FocusedValue(\.zoomOutAction) private var zoomOut
     @FocusedValue(\.resetZoomAction) private var resetZoom
@@ -78,7 +78,7 @@ struct ContentView: View {
                                 onDeleteWorktree: { node, skipTrash in
                                     appState.deleteWorktree(node, skipTrash: skipTrash)
                                 },
-                                onShowWorktrees: { showingWorktrees = true }
+                                onShowWorktrees: { openWorktreeReport() }
                             )
                         }
                     }
@@ -145,7 +145,7 @@ struct ContentView: View {
                 .help("Highlight linked git worktrees and show their total size")
 
                 Button {
-                    showingWorktrees = true
+                    openWorktreeReport()
                 } label: {
                     Label("Worktree Report", systemImage: "list.bullet.rectangle")
                 }
@@ -202,16 +202,17 @@ struct ContentView: View {
             // Start or stop watching for worktrees deleted outside the app.
             coordinator?.updateWorktreeWatch()
         }
-        .sheet(isPresented: $showingWorktrees) {
-            WorktreeInspectorView(state: appState)
-                .environment(appState)
-        }
         // Refusals can start from the treemap or the inspector, so the alert is
         // attached to the window rather than to any one surface.
         .worktreeDeletionAlert(state: appState)
         .focusedSceneValue(\.openFolderAction, {
             openFolder()
         })
+    }
+
+    /// Opens (or focuses) the Worktree Report window.
+    private func openWorktreeReport() {
+        openWindow(id: WorktreeReportWindow.id)
     }
 
     private func selectAndScan() {

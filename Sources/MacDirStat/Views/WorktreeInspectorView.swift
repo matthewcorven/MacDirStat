@@ -4,7 +4,7 @@ import SwiftUI
 /// delete it, a stale-and-clean filter, and a one-click prune for registrations
 /// whose folder is gone.
 struct WorktreeInspectorView: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
     @Bindable var state: AppState
 
     @State private var pendingDelete: WorktreeRecord?
@@ -18,7 +18,9 @@ struct WorktreeInspectorView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 680, minHeight: 440)
+        // Minimums only: the window is user-resizable, and the list scrolls
+        // inside whatever height it is given.
+        .frame(minWidth: 640, idealWidth: 780, minHeight: 360, idealHeight: 560)
         .confirmationDialog(
             "Move “\(pendingDelete?.name ?? "")” to the Trash?",
             isPresented: Binding(
@@ -69,7 +71,7 @@ struct WorktreeInspectorView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Close") { dismiss() }
+                Button("Close") { dismissWindow(id: WorktreeReportWindow.id) }
                     .keyboardShortcut(.cancelAction)
             }
 
@@ -122,22 +124,28 @@ struct WorktreeInspectorView: View {
                     }
                 }
                 .listStyle(.inset)
+                // Take all remaining height so a long list scrolls here rather
+                // than pushing the footer out of the window.
+                .frame(minHeight: 0, maxHeight: .infinity)
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
     }
 
     @ViewBuilder
     private func menu(for record: WorktreeRecord) -> some View {
-        if state.worktreeNode(for: record.path) != nil {
-            Button("Reveal in Finder") {
-                NSWorkspace.shared.selectFile(record.path, inFileViewerRootedAtPath: "")
-            }
-            Button("Copy Path") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(record.path, forType: .string)
-            }
-            Divider()
+        // Always available, whether or not the scan reached this folder and
+        // whatever the git state is: revealing and copying neither reads nor
+        // changes the worktree.
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.selectFile(record.path, inFileViewerRootedAtPath: "")
         }
+        .disabled(!record.canRevealInFinder)
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(record.path, forType: .string)
+        }
+        Divider()
         if record.isSafeToDelete {
             Button("Move to Trash…", role: .destructive) { pendingDelete = record }
         } else if record.isClean == false {

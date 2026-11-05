@@ -33,6 +33,9 @@ struct WorktreeRecord: Identifiable, Sendable, Equatable {
         path == "/" ? path : (path as NSString).lastPathComponent
     }
     var isClean: Bool? { uncommittedChanges.map { $0 == 0 } }
+    /// Reveal in Finder only makes sense while the folder exists; a prunable
+    /// registration has nothing to show.
+    var canRevealInFinder: Bool { DirectoryProbe.isDirectory(path) }
     /// Needs a human decision rather than a delete: uncommitted work, a missing
     /// repository, or a broken link.
     var needsAttention: Bool {

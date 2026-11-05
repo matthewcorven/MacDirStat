@@ -510,3 +510,26 @@ func cleanWorktreeIsDeletedAndDirtyOneIsRefusedWithAReason() async throws {
     #expect(appState.worktreeRecords.contains { $0.name == "clean-wt" } == false,
             "records after delete: \(remaining)")
 }
+
+// MARK: - Worktree Report window
+
+/// Reveal in Finder is offered for every worktree whose folder exists, whatever
+/// its git state, and withheld only for prunable registrations that have no
+/// folder to show.
+@Test func revealIsAvailableRegardlessOfGitState() throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let path = fixture.root.appendingPathComponent("wt")
+    try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+
+    for changes in [0, 1, nil] as [Int?] {
+        var record = WorktreeRecord(path: path.path)
+        record.uncommittedChanges = changes
+        #expect(record.canRevealInFinder, "reveal must work for changes=\(String(describing: changes))")
+    }
+
+    // A prunable registration points at a folder that no longer exists.
+    var gone = WorktreeRecord(path: fixture.root.appendingPathComponent("gone").path)
+    gone.isPrunable = true
+    #expect(!gone.canRevealInFinder)
+}
