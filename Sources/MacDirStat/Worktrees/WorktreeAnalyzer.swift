@@ -188,6 +188,14 @@ enum WorktreeAnalyzer {
         return GitWorktreeEntry.parsePorcelain(output)
     }
 
+    /// Removes a worktree folder and its registration in one git operation.
+    /// `--force` is required because the working tree may be dirty, which the
+    /// caller has already confirmed.
+    @discardableResult
+    static func removeWorktree(at path: String, in repository: String, runner: GitRunner) throws -> String {
+        try runner.run(["worktree", "remove", "--force", path], in: repository)
+    }
+
     /// Removes git's registrations for worktrees whose folder is gone.
     @discardableResult
     static func prune(in repository: String, runner: GitRunner) throws -> String {

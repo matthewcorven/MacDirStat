@@ -39,7 +39,7 @@ struct WorktreeInspectorView: View {
             }
             Button("Cancel", role: .cancel) { pendingBatchDelete = [] }
         } message: {
-            Text("Clean worktrees are moved to the Trash. Anything with uncommitted changes is left alone and reported.")
+            Text(trashDeleteWarning)
         }
         .confirmationDialog(
             batchTitle(toTrash: false),
@@ -56,7 +56,7 @@ struct WorktreeInspectorView: View {
             }
             Button("Cancel", role: .cancel) { pendingBatchImmediate = [] }
         } message: {
-            Text("These folders are deleted outright and cannot be undone, including any uncommitted changes inside them.")
+            Text(immediateDeleteWarning)
         }
         .worktreeDeletionAlert(state: state)
     }
@@ -303,6 +303,31 @@ struct WorktreeInspectorView: View {
         }
         let range = start <= end ? start...end : end...start
         selection = Set(rows[range])
+    }
+
+    /// Names the nested worktrees that will be destroyed along with the selected
+    /// ones. Their registrations stay in git, so those rows would otherwise
+    /// reappear as prunable afterwards without explanation.
+    private func nestedWarning(for records: [WorktreeRecord]) -> String {
+        var nested: [String] = []
+        for record in records {
+            nested.append(contentsOf: state.nestedWorktreeNames(in: record.path))
+        }
+        let unique = Array(Set(nested)).sorted()
+        guard !unique.isEmpty else { return "" }
+        let list = unique.prefix(3).joined(separator: ", ")
+        let more = unique.count > 3 ? " and \(unique.count - 3) more" : ""
+        return " This also destroys \(unique.count) nested worktree\(unique.count == 1 ? "" : "s") inside them (\(list)\(more)); their git registrations will remain as prunable entries."
+    }
+
+    private var trashDeleteWarning: String {
+        "Clean worktrees are moved to the Trash. Anything with uncommitted changes is left alone and reported."
+            + nestedWarning(for: pendingBatchDelete)
+    }
+
+    private var immediateDeleteWarning: String {
+        "These folders are deleted outright and cannot be undone, including any uncommitted changes inside them."
+            + nestedWarning(for: pendingBatchImmediate)
     }
 
     private func batchTitle(toTrash: Bool) -> String {

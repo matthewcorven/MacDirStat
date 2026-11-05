@@ -78,7 +78,10 @@ struct ContentView: View {
                                 onDeleteWorktree: { node, skipTrash in
                                     appState.deleteWorktree(node, skipTrash: skipTrash)
                                 },
-                                onShowWorktrees: { openWorktreeReport() }
+                                onShowWorktrees: { openWorktreeReport() },
+                                onWorktreeNestedCount: { node in
+                                    appState.nestedWorktreeNames(in: node.path)
+                                }
                             )
                         }
                     }

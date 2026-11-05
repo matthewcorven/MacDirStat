@@ -102,6 +102,8 @@ The report supports the usual macOS selection: click to select, **Shift-click** 
 
 Because a worktree is drawn as one block, right-clicking anywhere inside it offers the worktree actions, and selecting any folder inside it shows the worktree's delete button in the inspector. **Move Worktree to Trash** is refused while the worktree has uncommitted changes, and the reason is shown in an alert. **Delete Worktree Immediately** removes the folder outright instead of moving it to the Trash; because it asks for confirmation first, that confirmation is honoured and uncommitted changes do not block it. The only remaining refusal on that path is when git cannot report the worktree's state at all.
 
+Deleting also clears git's registration, so the entry cannot reappear as a prunable leftover on the next scan. Immediate deletes use `git worktree remove --force`, which drops the folder and the registration in one step; trashing removes the folder and then prunes. If git refuses (broken admin data, vanished repository), the folder is removed directly and the registration pruned afterwards. Deleting a worktree that contains other worktrees warns first, because those nested folders go with it while their own registrations remain.
+
 ### Does MacDirStat work on Intel Macs?
 
 Yes. MacDirStat is a universal app that runs natively on both Apple silicon (M-series) and Intel Macs, as long as the Mac runs macOS 15 Sequoia or later.

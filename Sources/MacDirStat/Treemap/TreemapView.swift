@@ -12,6 +12,8 @@ struct TreemapView: View {
     let worktreePrunableCount: Int
     let onDeleteWorktree: (FileNode, Bool) -> Void
     let onShowWorktrees: () -> Void
+    /// Names of worktrees nested inside the one being deleted.
+    let onWorktreeNestedCount: (FileNode) -> [String]
 
     @State private var items: [TreemapItem] = []
     @State private var hoveredItemID: Int?
@@ -168,7 +170,9 @@ struct TreemapView: View {
             }
             Button("Cancel", role: .cancel) { pendingImmediateDelete = nil }
         } message: { worktree in
-            Text("“\(worktree.name)” is deleted outright and cannot be undone, including any uncommitted changes inside it.")
+            let nested = onWorktreeNestedCount(worktree)
+            Text("“\(worktree.name)” is deleted outright and cannot be undone, including any uncommitted changes inside it."
+                 + (nested.isEmpty ? "" : " This also destroys \(nested.count) nested worktree\(nested.count == 1 ? "" : "s") inside it."))
         }
         .background(.black)
 

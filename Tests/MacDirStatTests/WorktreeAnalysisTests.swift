@@ -707,3 +707,92 @@ func prunableEntriesAreCountedSeparatelyFromWorktreesOnDisk() async throws {
     // And the two sets are disjoint.
     #expect(Set(onDisk.map(\.path)).isDisjoint(with: Set(prunable.map(\.path))))
 }
+
+// MARK: - Registration cleanup
+
+/// Deleting a worktree on disk must not leave a registration behind: otherwise
+/// the same entry returns as "prunable" on the next scan.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func deletingAnOnDiskWorktreeLeavesNoPrunableBehind() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let target = URL(fileURLWithPath: FilePath.normalizePath(
+        try fixture.worktree("doomed-wt", branch: "doomed-wt").path))
+    try Data("uncommitted\n".utf8).write(to: target.appendingPathComponent("notes.txt"))
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let record = try #require(appState.worktreeRecords.first { $0.name == "doomed-wt" })
+    let result = await appState.deleteWorktrees(paths: [record.path], allowDirty: true)
+    #expect(result.deleted == 1)
+    #expect(result.refused.isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: target.path))
+
+    // git itself no longer lists it, so no prunable entry can appear.
+    let runner = try #require(GitRunner.shared)
+    let remaining = try WorktreeAnalyzer.listWorktrees(in: fixture.mainRepo.path, runner: runner)
+    #expect(remaining.contains { $0.path.hasSuffix("doomed-wt") } == false,
+            "registration survived: \(remaining.map(\.path))")
+    #expect(!remaining.contains { $0.isPrunable })
+}
+
+/// The Trash path removes the folder and still clears the registration.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func trashingAWorktreeAlsoClearsItsRegistration() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let clean = try fixture.worktree("clean-wt", branch: "clean-wt")
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    let record = try #require(appState.worktreeRecords.first { $0.name == "clean-wt" })
+    let result = await appState.deleteWorktrees(paths: [record.path], allowDirty: false)
+    #expect(result.deleted == 1)
+    #expect(!FileManager.default.fileExists(atPath: clean.path))
+
+    let runner = try #require(GitRunner.shared)
+    let remaining = try WorktreeAnalyzer.listWorktrees(in: fixture.mainRepo.path, runner: runner)
+    #expect(!remaining.contains { $0.isPrunable })
+}
+
+/// Deleting a parent worktree destroys nested ones, which the confirmation must
+/// be able to report.
+@Test(.enabled(if: gitAvailable))
+@MainActor
+func nestedWorktreesAreReportedBeforeDeletingTheParent() async throws {
+    let fixture = try WorktreeFixture()
+    defer { fixture.remove() }
+    let parent = URL(fileURLWithPath: FilePath.normalizePath(
+        try fixture.worktree("parent-wt", branch: "parent-wt").path))
+    // A worktree created inside the parent worktree's folder.
+    let childPath = parent.appendingPathComponent("nested/child-wt")
+    try WorktreeFixture.git(["worktree", "add", "-q", childPath.path, "-b", "child-wt"],
+                            in: fixture.mainRepo)
+
+    let scanned = try await fixture.scan()
+    let appState = AppState()
+    appState.detectGitWorktrees = true
+    appState.setScanCompleted(root: scanned)
+    try await appState.waitForWorktreeAnalysis()
+
+    // The report can therefore warn before the parent is deleted.
+    #expect(appState.nestedWorktreeNames(in: parent.path) == ["child-wt"],
+            "records: \(appState.worktreeRecords.map(\.path))")
+    // A folder outside the parent reports nothing nested.
+    let outside = try fixture.worktree("outside-wt", branch: "outside-wt")
+    #expect(appState.nestedWorktreeNames(in: FilePath.normalizePath(outside.path)).isEmpty)
+}
+
+private func onDiskContaining(_ records: [WorktreeRecord], parent: URL) -> [String] {
+    records.filter { $0.path.hasPrefix(parent.path + "/") }.map(\.name).sorted()
+}
